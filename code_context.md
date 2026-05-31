@@ -1,0 +1,3 @@
+- We use React for the frontend and Python/FastAPI for the backend. 
+- Use https://github.com/KailunHong8/quant as github repo.
+- Generate Functional Spec based on the product_note.md with the contraints of this code_context.md
