@@ -1,0 +1,3 @@
+# Gmail OAuth2 tokens — never commit
+token.json
+credentials.json

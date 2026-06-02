@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.db import init_db
-from backend.routers import market, portfolio, agent, simulation
+from backend.routers import market, portfolio, agent, simulation, knowledge
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app.include_router(market.router)
 app.include_router(portfolio.router)
 app.include_router(agent.router)
 app.include_router(simulation.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/health")

@@ -2,9 +2,10 @@
 AWS Bedrock Converse API wrapper with tool-use support.
 
 Tools available to the agent:
-  - get_quote(symbol)      → FMP real-time quote
-  - get_portfolio()        → current user holdings from DB
-  - search_research(query) → relevant passages from docs/
+  - get_quote(symbol)              → FMP/Yahoo real-time quote
+  - get_portfolio()                → current user holdings from DB
+  - search_theses(entity, theme)   → structured investment theses from knowledge base
+  - get_entity_graph(symbol)       → supply chain / competitor / customer graph
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ import boto3
 from dotenv import load_dotenv
 
 from backend.services import fmp as fmp_service
-from backend.services.research import search_research
 
 load_dotenv()
 
@@ -35,7 +35,7 @@ TOOLS = [
     {
         "toolSpec": {
             "name": "get_quote",
-            "description": "Fetch a real-time stock quote from FMP for a given ticker symbol.",
+            "description": "Fetch a real-time stock quote (price, change, volume, market cap) for a given ticker symbol.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -50,7 +50,7 @@ TOOLS = [
     {
         "toolSpec": {
             "name": "get_portfolio",
-            "description": "Return the current user's portfolio holdings, cash balance, and P&L.",
+            "description": "Return the current user's portfolio holdings, cash balance, equity value, and P&L.",
             "inputSchema": {
                 "json": {
                     "type": "object",
@@ -62,18 +62,47 @@ TOOLS = [
     },
     {
         "toolSpec": {
-            "name": "search_research",
+            "name": "search_theses",
             "description": (
-                "Search the investing research library (Shiller 'Finance and the Good Society', "
-                "Brealey-Myers-Allen 'Principles of Corporate Finance') for passages relevant to a query."
+                "Search the structured investment thesis database for research insights. "
+                "Returns theses with entity stance, claims (facts or forecasts), theme, and date. "
+                "Use this to answer questions like 'What is ARK's thesis on NVDA?' or "
+                "'What are the bullish arguments for AI infrastructure?'"
             ),
             "inputSchema": {
                 "json": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Research query or topic"}
+                        "entity": {
+                            "type": "string",
+                            "description": "Ticker symbol to filter by, e.g. NVDA. Leave empty to search across all entities."
+                        },
+                        "theme": {
+                            "type": "string",
+                            "description": "Investment theme to filter by, e.g. 'AI Infrastructure', 'EV'. Leave empty to search all themes."
+                        },
                     },
-                    "required": ["query"],
+                    "required": [],
+                }
+            },
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "get_entity_graph",
+            "description": (
+                "Get the supply chain, competitor, and customer relationships for a stock. "
+                "Use this to understand which holdings may be affected when a key company is mentioned in research. "
+                "For example, if a newsletter is bullish on NVDA, this tool reveals NVDA's customers (MSFT, META, AMZN) "
+                "and suppliers (TSMC, SK Hynix) that may be indirectly impacted."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Ticker symbol, e.g. NVDA"}
+                    },
+                    "required": ["symbol"],
                 }
             },
         }
@@ -81,11 +110,14 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are Quant, an AI trading copilot powered by research from leading finance textbooks "
-    "(Shiller, Brealey-Myers-Allen) and real-time market data. "
-    "Help the user build and refine investment strategies, explain financial concepts, "
-    "and analyse their paper-trading portfolio. "
-    "Always ground recommendations in evidence from the research library when relevant. "
+    "You are Quant, an AI trading copilot with access to a structured investment knowledge base "
+    "built from ARK research newsletters and curated finance texts. "
+    "The knowledge base contains investment theses organized by entity (ticker) and theme, "
+    "with each claim labeled as a verified fact or a forecast — never confuse the two. "
+    "You can also explore entity relationships (suppliers, customers, competitors) to reason "
+    "about supply chain effects and competitive dynamics when a company is discussed. "
+    "You have access to real-time market data and the user's paper-trading portfolio. "
+    "Always cite whether your reasoning comes from a fact or a forecast, and from which source. "
     "You operate in a paper-trading simulation — no real money is at risk."
 )
 
@@ -102,10 +134,22 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
     if name == "get_portfolio":
         return json.dumps(portfolio_snapshot or {"error": "portfolio not available"})
 
-    if name == "search_research":
-        query = tool_input.get("query", "")
-        results = search_research(query)
+    if name == "search_theses":
+        from backend.db import SessionLocal
+        from backend.services.knowledge_base import search_theses
+        entity = tool_input.get("entity") or None
+        theme = tool_input.get("theme") or None
+        async with SessionLocal() as db:
+            results = await search_theses(entity, theme, limit=8, db=db)
         return json.dumps(results)
+
+    if name == "get_entity_graph":
+        from backend.db import SessionLocal
+        from backend.services.knowledge_base import get_entity_graph
+        symbol = tool_input.get("symbol", "")
+        async with SessionLocal() as db:
+            result = await get_entity_graph(symbol, db)
+        return json.dumps(result)
 
     return json.dumps({"error": f"unknown tool: {name}"})
 

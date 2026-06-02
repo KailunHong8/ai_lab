@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { getQuote, getHistory, searchSymbol } from "../api/client";
+import { searchTickers } from "../data/tickers";
 import {
   ResponsiveContainer,
   LineChart,
@@ -9,6 +10,21 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
+}
+
+interface Suggestion {
+  symbol: string;
+  name: string;
+  exchangeShortName: string;
+}
 
 interface Quote {
   symbol: string;
@@ -27,34 +43,57 @@ interface HistoryCandle {
   close: number;
 }
 
-interface SearchResult {
-  symbol: string;
-  name: string;
-  exchangeShortName: string;
-}
-
 export default function Market() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const debouncedQuery = useDebounce(query, 300);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [history, setHistory] = useState<HistoryCandle[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setLoading(true);
-    try {
-      const res = await searchSymbol(query);
-      setResults(res.slice(0, 8));
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Show static suggestions instantly on every keystroke (no API call)
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 1) { setSuggestions([]); return; }
+    const staticResults: Suggestion[] = searchTickers(q).map((t) => ({
+      symbol: t.symbol,
+      name: t.name,
+      exchangeShortName: t.exchange,
+    }));
+    setSuggestions(staticResults);
+  }, [query]);
 
-  const handleSelect = async (symbol: string) => {
+  // Fire API call only after user pauses typing (300ms debounce) — reduces FMP rate limit usage
+  useEffect(() => {
+    const q = debouncedQuery.trim();
+    if (q.length < 2) return;
+    let cancelled = false;
+    searchSymbol(q).then((results: Suggestion[]) => {
+      if (!cancelled && results.length > 0) setSuggestions(results.slice(0, 8));
+    });
+    return () => { cancelled = true; };
+  }, [debouncedQuery]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setSuggestions([]);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const loadSymbol = async (symbol: string) => {
+    setSuggestions([]);
+    setQuery(symbol);
     setLoading(true);
-    setResults([]);
+    setError("");
+    setQuote(null);
+    setHistory([]);
     try {
       const [q, h] = await Promise.all([
         getQuote(symbol),
@@ -64,11 +103,28 @@ export default function Market() {
           new Date().toISOString().slice(0, 10)
         ),
       ]);
-      setQuote(q);
-      setHistory(h.map((c: any) => ({ date: c.date, close: c.close })));
+      if (!q || !q.price) {
+        setError(`No data found for "${symbol}".`);
+      } else {
+        setQuote(q);
+        setHistory(h.map((c: any) => ({ date: c.date, close: c.close })));
+      }
+    } catch (err: any) {
+      const detail = err.response?.data?.detail ?? err.message;
+      if (err.response?.status === 403) {
+        setError(`FMP API key issue — ${detail}`);
+      } else {
+        setError(`Failed to fetch data for "${symbol}". Try again.`);
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const symbol = query.trim().toUpperCase();
+    if (symbol) loadSymbol(symbol);
   };
 
   const pctColor = quote && quote.changesPercentage >= 0 ? "text-green-600" : "text-red-600";
@@ -77,34 +133,41 @@ export default function Market() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Market</h1>
 
-      <form onSubmit={handleSearch} className="flex gap-2 mb-4">
-        <input
-          className="border rounded px-3 py-2 text-sm flex-1 max-w-xs"
-          placeholder="Search symbol or company name…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <button type="submit" className="bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium hover:bg-blue-700">
-          Search
-        </button>
-      </form>
+      <div ref={wrapperRef} className="relative max-w-sm mb-6">
+        <form onSubmit={handleSubmit} className="flex gap-2">
+          <input
+            className="border rounded px-3 py-2 text-sm flex-1"
+            placeholder="Search company or ticker e.g. Apple, NVDA"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoComplete="off"
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? "…" : "Go"}
+          </button>
+        </form>
 
-      {results.length > 0 && (
-        <ul className="bg-white rounded-xl shadow mb-4 divide-y text-sm max-w-sm">
-          {results.map((r) => (
-            <li
-              key={r.symbol}
-              className="px-4 py-2 hover:bg-gray-50 cursor-pointer flex justify-between"
-              onClick={() => handleSelect(r.symbol)}
-            >
-              <span className="font-medium">{r.symbol}</span>
-              <span className="text-gray-500 truncate ml-2">{r.name}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+        {suggestions.length > 0 && (
+          <ul className="absolute z-10 w-full bg-white rounded-xl shadow-lg border mt-1 divide-y text-sm max-h-64 overflow-y-auto">
+            {suggestions.map((r) => (
+              <li
+                key={r.symbol}
+                className="px-4 py-2 hover:bg-blue-50 cursor-pointer flex justify-between items-center gap-2"
+                onMouseDown={() => loadSymbol(r.symbol)}
+              >
+                <span className="font-semibold text-blue-700 shrink-0">{r.symbol}</span>
+                <span className="text-gray-500 truncate text-right">{r.name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
-      {loading && <p className="text-gray-500 text-sm">Loading…</p>}
+      {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
 
       {quote && (
         <div className="bg-white rounded-xl shadow p-5 mb-6 max-w-lg">
@@ -140,6 +203,12 @@ export default function Market() {
             </LineChart>
           </ResponsiveContainer>
         </div>
+      )}
+
+      {quote && history.length === 0 && !loading && (
+        <p className="text-xs text-gray-400 mt-2">
+          Historical chart not available for this symbol on the FMP free tier.
+        </p>
       )}
     </div>
   );

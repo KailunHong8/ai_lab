@@ -22,5 +22,6 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     from backend.models import User, Position, Transaction  # noqa: F401
+    from backend.models import Document, Thesis, Entity, EntityRelationship  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -1,17 +1,33 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from backend.services import fmp
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
 
+def _fmp_exc_to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, RuntimeError):
+        return HTTPException(status_code=503, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/quote/{symbol}")
 async def quote(symbol: str):
-    return await fmp.get_quote(symbol)
+    try:
+        return await fmp.get_quote(symbol)
+    except (PermissionError, LookupError, RuntimeError) as exc:
+        raise _fmp_exc_to_http(exc)
 
 
 @router.get("/profile/{symbol}")
 async def profile(symbol: str):
-    return await fmp.get_profile(symbol)
+    try:
+        return await fmp.get_profile(symbol)
+    except (PermissionError, LookupError, RuntimeError) as exc:
+        raise _fmp_exc_to_http(exc)
 
 
 @router.get("/search")
