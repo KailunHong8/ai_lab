@@ -44,6 +44,16 @@ export const agentChat = (message: string, session_id = "default") =>
 export const clearSession = (session_id: string) =>
   api.delete(`/api/agent/chat/${session_id}`).then((r) => r.data);
 
+// ── Knowledge ─────────────────────────────────────────────────────────────────
+export const uploadDocument = (formData: FormData) =>
+  api.post("/api/knowledge/upload", formData).then((r) => r.data);
+
+export const listDocuments = () =>
+  api.get("/api/knowledge/documents").then((r) => r.data);
+
+export const deleteDocument = (id: string) =>
+  api.delete(`/api/knowledge/documents/${id}`).then((r) => r.data);
+
 // ── Simulation ────────────────────────────────────────────────────────────────
 export const runSimulation = (payload: {
   strategy_description: string;

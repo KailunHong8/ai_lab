@@ -6,6 +6,7 @@ import Transactions from "./pages/Transactions";
 import Market from "./pages/Market";
 import Agent from "./pages/Agent";
 import Simulation from "./pages/Simulation";
+import Research from "./pages/Research";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/market" element={<Market />} />
           <Route path="/agent" element={<Agent />} />
           <Route path="/simulation" element={<Simulation />} />
+          <Route path="/research" element={<Research />} />
         </Routes>
       </Layout>
     </BrowserRouter>

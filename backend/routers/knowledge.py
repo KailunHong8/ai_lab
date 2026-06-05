@@ -1,30 +1,96 @@
-import os
+import hashlib
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db import get_db
+from backend.models import Document
 from backend.services import knowledge_base
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 
-@router.post("/ingest")
-async def ingest(db: AsyncSession = Depends(get_db)):
-    """Sync emails from the configured Gmail label and extract theses."""
-    from backend.services import gmail_ingestion
+@router.post("/upload")
+async def upload_document(
+    title: str = Form(...),
+    source: str = Form("ARK"),
+    date: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a document to the knowledge base by file upload or pasted text."""
+    if file:
+        raw = await file.read()
+        content = raw.decode("utf-8", errors="replace")
+    elif text:
+        content = text
+    else:
+        raise HTTPException(status_code=400, detail="Provide either a file or text.")
 
-    label = os.getenv("GMAIL_LABEL", "Research/ARK")
-    try:
-        count = await gmail_ingestion.sync_gmail(label, db)
-        return {"ingested": count, "label": label}
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}")
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Document content is empty.")
+
+    doc_id = hashlib.sha256(content.encode()).hexdigest()[:32]
+
+    existing = await db.execute(select(Document).where(Document.id == doc_id))
+    if existing.scalar_one_or_none():
+        return {"status": "duplicate", "id": doc_id}
+
+    from backend.services.knowledge_base import DOCS_DIR
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    safe_date = (date or "unknown").replace("-", "")
+    (DOCS_DIR / f"{safe_date}_{doc_id[:8]}.md").write_text(content, encoding="utf-8")
+
+    doc = Document(
+        id=doc_id,
+        source=source,
+        title=title,
+        content=content,
+        date=date or None,
+        processed=False,
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+
+    from backend.services import thesis_extractor
+    await thesis_extractor.extract_and_save(doc_id, content, db)
+
+    return {"status": "ok", "id": doc_id, "title": title}
+
+
+@router.get("/documents")
+async def list_documents(
+    source: Optional[str] = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """List documents in the knowledge base."""
+    q = select(Document)
+    if source:
+        q = q.where(Document.source == source)
+    q = q.order_by(Document.created_at.desc()).limit(limit)
+    result = await db.execute(q)
+    rows = result.scalars().all()
+    return [
+        {"id": r.id, "title": r.title, "source": r.source, "date": r.date, "processed": r.processed}
+        for r in rows
+    ]
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
+    """Remove a document and its extracted theses."""
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    await db.delete(doc)
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.get("/theses")

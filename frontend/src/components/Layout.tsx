@@ -7,6 +7,7 @@ const links = [
   { to: "/market", label: "Market" },
   { to: "/agent", label: "AI Copilot" },
   { to: "/simulation", label: "Simulation" },
+  { to: "/research", label: "Research" },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {

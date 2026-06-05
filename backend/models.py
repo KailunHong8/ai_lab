@@ -116,7 +116,7 @@ class EntityRelationship(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     from_symbol: Mapped[str] = mapped_column(String(16), ForeignKey("entities.symbol"), index=True)
     to_symbol: Mapped[str] = mapped_column(String(16), ForeignKey("entities.symbol"), index=True)
-    relationship: Mapped[str] = mapped_column(String(32))    # supplier/competitor/customer/partner
+    rel_type: Mapped[str] = mapped_column(String(32))    # supplier/competitor/customer/partner
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     from_entity: Mapped["Entity"] = relationship("Entity", foreign_keys=[from_symbol], back_populates="outgoing")
