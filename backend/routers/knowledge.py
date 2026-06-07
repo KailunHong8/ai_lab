@@ -24,7 +24,84 @@ async def upload_document(
     """Add a document to the knowledge base by file upload or pasted text."""
     if file:
         raw = await file.read()
-        content = raw.decode("utf-8", errors="replace")
+        filename = (file.filename or "").lower()
+        is_pdf  = filename.endswith(".pdf") or file.content_type == "application/pdf"
+        is_mbox = filename.endswith(".mbox")
+
+        if is_mbox:
+            from backend.services.mbox_parser import parse_mbox
+            try:
+                emails = parse_mbox(raw)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=f"Could not parse .mbox: {exc}")
+            if not emails:
+                raise HTTPException(status_code=400, detail="No emails found in .mbox file.")
+
+            imported = 0
+            duplicates = 0
+            new_doc_ids: list[str] = []
+
+            from backend.services.knowledge_base import DOCS_DIR
+            DOCS_DIR.mkdir(parents=True, exist_ok=True)
+
+            for em in emails:
+                content = em["content"]
+                if not content.strip():
+                    continue
+                doc_id = hashlib.sha256(content.encode()).hexdigest()[:32]
+                existing = await db.execute(select(Document).where(Document.id == doc_id))
+                if existing.scalar_one_or_none():
+                    duplicates += 1
+                    continue
+
+                safe_date = (em["date"] or "unknown").replace("-", "")
+                (DOCS_DIR / f"{safe_date}_{doc_id[:8]}.md").write_text(content, encoding="utf-8")
+
+                doc = Document(
+                    id=doc_id,
+                    source=source,
+                    title=em["subject"] or title,
+                    content=content,
+                    date=em["date"] or None,
+                    processed=False,
+                )
+                db.add(doc)
+                new_doc_ids.append((doc_id, content))
+                imported += 1
+
+            await db.commit()
+
+            # Run thesis extraction in the background — don't block the HTTP response.
+            # Documents show as "Pending" in the UI until extraction completes.
+            if new_doc_ids:
+                import asyncio
+                from backend.services import thesis_extractor
+                from backend.db import SessionLocal
+
+                async def _extract_all():
+                    for did, content in new_doc_ids:
+                        try:
+                            async with SessionLocal() as bg_db:
+                                await thesis_extractor.extract_and_save(did, content, bg_db)
+                        except Exception:
+                            pass  # log if needed, but don't crash the background task
+
+                asyncio.create_task(_extract_all())
+
+            return {"status": "ok", "imported": imported, "duplicates": duplicates}
+
+        elif is_pdf:
+            try:
+                from pypdf import PdfReader
+                import io
+                reader = PdfReader(io.BytesIO(raw))
+                content = "\n".join(
+                    page.extract_text() or "" for page in reader.pages
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=f"Could not parse PDF: {exc}")
+        else:
+            content = raw.decode("utf-8", errors="replace")
     elif text:
         content = text
     else:

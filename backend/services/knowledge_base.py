@@ -59,7 +59,7 @@ async def get_entity_graph(symbol: str, db: AsyncSession) -> dict:
 
     graph: dict[str, list[dict]] = {}
     for r in rels:
-        rel_type = r.relationship
+        rel_type = r.rel_type
         if rel_type not in graph:
             graph[rel_type] = []
         # From this symbol's perspective

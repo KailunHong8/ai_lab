@@ -56,6 +56,16 @@ export default function Research() {
       const res = await uploadDocument(fd);
       if (res.status === "duplicate") {
         setStatus("Already in knowledge base.");
+      } else if (res.imported !== undefined) {
+        // mbox batch import
+        const msg = res.imported === 0
+          ? `All ${res.duplicates} emails already in library.`
+          : `Imported ${res.imported} email${res.imported !== 1 ? "s" : ""}${res.duplicates ? ` (${res.duplicates} duplicates skipped)` : ""}. Thesis extraction running in background.`;
+        setStatus(msg);
+        setTitle("");
+        setDate("");
+        if (fileRef.current) fileRef.current.value = "";
+        await load();
       } else {
         setStatus("Added successfully.");
         setTitle("");
@@ -136,7 +146,7 @@ export default function Research() {
             <input
               ref={fileRef}
               type="file"
-              accept=".txt,.md,.pdf"
+              accept=".txt,.md,.pdf,.mbox"
               className="text-sm"
             />
           ) : (

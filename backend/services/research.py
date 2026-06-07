@@ -1,7 +1,8 @@
 """
-Keyword-based retrieval over the research corpus in docs/.
-Chunks text files (context.txt) and extracted PDF text into ~500-word windows,
-then returns the top-k chunks whose words overlap most with the query.
+Keyword-based retrieval over the investing principles library in investing_research/.
+Indexes all PDFs and markdown files (Brealey, Shiller, Poor Charlie's Almanack, etc.)
+into ~500-word chunks and returns the top-k by keyword overlap with the query.
+Adding a new book is as simple as dropping a file into investing_research/.
 """
 from __future__ import annotations
 
@@ -66,7 +67,7 @@ def _get_chunks() -> list[dict]:
     return _chunks
 
 
-def search_research(query: str, top_k: int = 4) -> list[dict]:
+def search_principles(query: str, top_k: int = 4) -> list[dict]:
     """Return top_k chunks most relevant to query (keyword overlap)."""
     query_words = set(re.findall(r"\w+", query.lower()))
     if not query_words:

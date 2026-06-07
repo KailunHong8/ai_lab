@@ -151,7 +151,7 @@ async def extract_and_save(document_id: str, content: str, db: AsyncSession) -> 
         db.add(EntityRelationship(
             from_symbol=from_sym,
             to_symbol=to_sym,
-            relationship=rel_type,
+            rel_type=rel_type,
             description=r.get("description") or None,
         ))
         rel_count += 1

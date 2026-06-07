@@ -4,8 +4,9 @@ AWS Bedrock Converse API wrapper with tool-use support.
 Tools available to the agent:
   - get_quote(symbol)              → FMP/Yahoo real-time quote
   - get_portfolio()                → current user holdings from DB
-  - search_theses(entity, theme)   → structured investment theses from knowledge base
+  - search_theses(entity, theme)   → current market opinions from uploaded research
   - get_entity_graph(symbol)       → supply chain / competitor / customer graph
+  - search_principles(query)       → timeless investing principles from the book library
 """
 from __future__ import annotations
 
@@ -107,17 +108,50 @@ TOOLS = [
             },
         }
     },
+    {
+        "toolSpec": {
+            "name": "search_principles",
+            "description": (
+                "Search a curated library of investing and finance books "
+                "(currently: Brealey-Myers-Allen Principles of Corporate Finance, "
+                "Shiller Finance and the Good Society, Poor Charlie's Almanack). "
+                "Use this to ground reasoning in established theory, mental models, and "
+                "long-term investing philosophy. These are timeless principles, not market opinions. "
+                "Call this when the user asks about valuation frameworks, risk models, CAPM, "
+                "diversification, mental models, or any foundational investing concept."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Topic or concept to look up, e.g. 'CAPM risk premium', 'mental models checklist', 'NPV capital budgeting'"
+                        }
+                    },
+                    "required": ["query"],
+                }
+            },
+        }
+    },
 ]
 
 SYSTEM_PROMPT = (
-    "You are Quant, an AI trading copilot with access to a structured investment knowledge base "
-    "built from ARK research newsletters and curated finance texts. "
-    "The knowledge base contains investment theses organized by entity (ticker) and theme, "
-    "with each claim labeled as a verified fact or a forecast — never confuse the two. "
-    "You can also explore entity relationships (suppliers, customers, competitors) to reason "
-    "about supply chain effects and competitive dynamics when a company is discussed. "
-    "You have access to real-time market data and the user's paper-trading portfolio. "
-    "Always cite whether your reasoning comes from a fact or a forecast, and from which source. "
+    "You are Quant, an AI trading copilot with access to two distinct knowledge sources — "
+    "treat them very differently:\n\n"
+    "1. INVESTING PRINCIPLES (search_principles tool): A curated library of classic investing and finance books "
+    "(Brealey-Myers-Allen, Shiller, Poor Charlie's Almanack, and others added over time). "
+    "This is established theory and timeless wisdom. Treat it as ground truth. "
+    "Use it to frame the 'why' — valuation logic, risk models, mental models, capital allocation discipline.\n\n"
+    "2. CURRENT MARKET OPINIONS (search_theses tool): Research uploaded by the user — newsletters, ARK reports, "
+    "analyst notes, etc. These may be forecasts or opinions. Always label them as such and note the source and date. "
+    "Use them for the 'what and when' — specific stocks, near-term themes, catalysts.\n\n"
+    "Reasoning pattern: ground every investment argument in principles first, then layer on current opinions. "
+    "For example: 'Brealey's CAPM implies a required return of X% for this beta — ARK's thesis forecasts Y%, "
+    "which clears that hurdle [or does not].'\n\n"
+    "You also have access to real-time market data and the user's paper-trading portfolio. "
+    "Always cite which source (book title, or thesis source + date) your reasoning draws from. "
+    "Never confuse a verified fact with a forecast. "
     "You operate in a paper-trading simulation — no real money is at risk."
 )
 
@@ -150,6 +184,11 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
         async with SessionLocal() as db:
             result = await get_entity_graph(symbol, db)
         return json.dumps(result)
+
+    if name == "search_principles":
+        from backend.services.research import search_principles
+        results = search_principles(tool_input.get("query", ""), top_k=4)
+        return json.dumps(results)
 
     return json.dumps({"error": f"unknown tool: {name}"})
 
