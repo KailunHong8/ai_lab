@@ -38,8 +38,15 @@ export const sell = (symbol: string, shares: number) =>
   api.post("/api/portfolio/sell", { symbol, shares }).then((r) => r.data);
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
-export const agentChat = (message: string, session_id = "default") =>
-  api.post("/api/agent/chat", { message, session_id }).then((r) => r.data);
+export const agentChat = (
+  message: string,
+  session_id = "default",
+  provider = "bedrock",
+  model?: string,
+) =>
+  api
+    .post("/api/agent/chat", { message, session_id, provider, model: model || null })
+    .then((r) => r.data);
 
 export const clearSession = (session_id: string) =>
   api.delete(`/api/agent/chat/${session_id}`).then((r) => r.data);
@@ -54,11 +61,27 @@ export const listDocuments = () =>
 export const deleteDocument = (id: string) =>
   api.delete(`/api/knowledge/documents/${id}`).then((r) => r.data);
 
+// ── Screener ──────────────────────────────────────────────────────────────────
+export const runScreener = (tickers: string, minCriteria = 4) =>
+  api
+    .get("/api/screener/run", { params: { tickers, min_criteria: minCriteria } })
+    .then((r) => r.data);
+
+export const listOllamaModels = () =>
+  api.get("/api/screener/models").then((r) => r.data);
+
 // ── Simulation ────────────────────────────────────────────────────────────────
 export const runSimulation = (payload: {
   strategy_description: string;
   symbol: string;
+  benchmark_symbol?: string;
   start_date: string;
   end_date: string;
   initial_capital: number;
+  provider?: string;
+  model?: string;
+  run_monte_carlo?: boolean;
+  monte_carlo_sims?: number;
+  run_walk_forward?: boolean;
+  run_stress_tests?: boolean;
 }) => api.post("/api/simulation/run", payload).then((r) => r.data);

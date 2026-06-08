@@ -90,14 +90,25 @@ def _call_bedrock(content: str) -> dict[str, Any]:
         return {"theses": [], "relationships": []}
 
 
-async def extract_and_save(document_id: str, content: str, db: AsyncSession) -> dict:
+async def extract_and_save(
+    document_id: str,
+    content: str,
+    db: AsyncSession,
+    provider: str = "bedrock",
+    model: str | None = None,
+) -> dict:
     """
     Extract theses and entity relationships from `content`, persist to DB,
     mark the document as processed. Returns extracted counts.
     """
     import asyncio
 
-    extracted = await asyncio.to_thread(_call_bedrock, content)
+    if provider == "ollama":
+        from backend.services import ollama_client
+        _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
+        extracted = await ollama_client.extract_json(content, EXTRACTION_PROMPT, model=_model)
+    else:
+        extracted = await asyncio.to_thread(_call_bedrock, content)
 
     # Fetch source from document record
     doc_row = await db.execute(select(Document).where(Document.id == document_id))

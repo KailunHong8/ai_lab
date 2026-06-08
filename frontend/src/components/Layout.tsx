@@ -8,6 +8,7 @@ const links = [
   { to: "/agent", label: "AI Copilot" },
   { to: "/simulation", label: "Simulation" },
   { to: "/research", label: "Research" },
+  { to: "/screener", label: "Screener" },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {

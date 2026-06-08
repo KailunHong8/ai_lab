@@ -17,22 +17,32 @@ _sessions: dict[str, list[dict]] = {}
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
+    provider: str = "bedrock"   # "bedrock" or "ollama"
+    model: str | None = None    # override model; None = use provider default
 
 
 @router.post("/chat")
 async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     history = _sessions.setdefault(req.session_id, [])
 
-    # Give the agent an up-to-date snapshot of the portfolio
     portfolio = await portfolio_summary(db=db)
 
-    reply = await bedrock.chat(
-        message=req.message,
-        history=history,
-        portfolio_snapshot=portfolio,
-    )
+    if req.provider == "ollama":
+        from backend.services import ollama_client
+        _model = req.model or ollama_client.OLLAMA_DEFAULT_MODEL
+        reply = await ollama_client.chat(
+            message=req.message,
+            history=history,
+            portfolio_snapshot=portfolio,
+            model=_model,
+        )
+    else:
+        reply = await bedrock.chat(
+            message=req.message,
+            history=history,
+            portfolio_snapshot=portfolio,
+        )
 
-    # Persist the turn into session history
     history.append({"role": "user", "content": [{"text": req.message}]})
     history.append({"role": "assistant", "content": [{"text": reply}]})
 

@@ -1,0 +1,5 @@
+# Local vector store artifacts
+chroma_principles/**/*.bin
+chroma_principles/**/*.sqlite3
+chroma_principles/**/*.sqlite3-shm
+chroma_principles/**/*.sqlite3-wal

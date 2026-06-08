@@ -19,6 +19,8 @@ async def upload_document(
     date: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None),
+    provider: str = Form("bedrock"),
+    model: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a document to the knowledge base by file upload or pasted text."""
@@ -78,11 +80,15 @@ async def upload_document(
                 from backend.services import thesis_extractor
                 from backend.db import SessionLocal
 
+                _provider, _model = provider, model
+
                 async def _extract_all():
                     for did, content in new_doc_ids:
                         try:
                             async with SessionLocal() as bg_db:
-                                await thesis_extractor.extract_and_save(did, content, bg_db)
+                                await thesis_extractor.extract_and_save(
+                                    did, content, bg_db, provider=_provider, model=_model
+                                )
                         except Exception:
                             pass  # log if needed, but don't crash the background task
 
@@ -134,7 +140,7 @@ async def upload_document(
     await db.refresh(doc)
 
     from backend.services import thesis_extractor
-    await thesis_extractor.extract_and_save(doc_id, content, db)
+    await thesis_extractor.extract_and_save(doc_id, content, db, provider=provider, model=model)
 
     return {"status": "ok", "id": doc_id, "title": title}
 
@@ -189,5 +195,15 @@ async def get_entity(symbol: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/search")
 async def search_docs(q: str, limit: int = 4):
-    """Full-text keyword search over raw markdown documents."""
-    return knowledge_base.full_text_search(q, limit)
+    """Semantic search over the principles library (chromadb), falls back to keyword."""
+    from backend.services.research import search_principles
+    return search_principles(q, top_k=limit)
+
+
+@router.post("/reindex")
+async def reindex_principles():
+    """Force a full re-index of the investing_research/ library into chromadb."""
+    import asyncio
+    from backend.services.research import rebuild_index
+    count = await asyncio.to_thread(rebuild_index)
+    return {"status": "ok", "chunks_indexed": count}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { uploadDocument, listDocuments, deleteDocument } from "../api/client";
+import { uploadDocument, listDocuments, deleteDocument, listOllamaModels } from "../api/client";
 
 interface Doc {
   id: string;
@@ -8,6 +8,8 @@ interface Doc {
   date: string | null;
   processed: boolean;
 }
+
+const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
 
 export default function Research() {
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -18,6 +20,12 @@ export default function Research() {
   const [tab, setTab] = useState<"file" | "text">("file");
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const [provider, setProvider] = useState<"bedrock" | "ollama">("bedrock");
+  const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
+  const [ollamaModels, setOllamaModels] = useState<string[]>(["qwen2.5:9b"]);
+  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = async () => {
@@ -30,7 +38,19 @@ export default function Research() {
 
   useEffect(() => {
     load();
+    listOllamaModels()
+      .then((data: { models: string[]; available: boolean }) => {
+        setOllamaAvailable(data.available);
+        if (data.models.length > 0) setOllamaModels(data.models);
+      })
+      .catch(() => {});
   }, []);
+
+  const handleProviderChange = (p: "bedrock" | "ollama") => {
+    setProvider(p);
+    if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    else setModel(ollamaModels[0] || "qwen2.5:9b");
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,6 +60,8 @@ export default function Research() {
     fd.append("title", title.trim());
     fd.append("source", source.trim() || "ARK");
     if (date) fd.append("date", date);
+    fd.append("provider", provider);
+    fd.append("model", model);
 
     if (tab === "file") {
       const file = fileRef.current?.files?.[0];
@@ -57,10 +79,12 @@ export default function Research() {
       if (res.status === "duplicate") {
         setStatus("Already in knowledge base.");
       } else if (res.imported !== undefined) {
-        // mbox batch import
-        const msg = res.imported === 0
-          ? `All ${res.duplicates} emails already in library.`
-          : `Imported ${res.imported} email${res.imported !== 1 ? "s" : ""}${res.duplicates ? ` (${res.duplicates} duplicates skipped)` : ""}. Thesis extraction running in background.`;
+        const msg =
+          res.imported === 0
+            ? `All ${res.duplicates} emails already in library.`
+            : `Imported ${res.imported} email${res.imported !== 1 ? "s" : ""}${
+                res.duplicates ? ` (${res.duplicates} duplicates skipped)` : ""
+              }. Thesis extraction running in background.`;
         setStatus(msg);
         setTitle("");
         setDate("");
@@ -86,6 +110,8 @@ export default function Research() {
     setDocs((prev) => prev.filter((d) => d.id !== id));
   };
 
+  const modelOptions = provider === "bedrock" ? BEDROCK_MODELS : ollamaModels;
+
   return (
     <div className="space-y-8">
       <h1 className="text-2xl font-bold">Research Library</h1>
@@ -94,8 +120,8 @@ export default function Research() {
       <div className="bg-white rounded-xl shadow p-6">
         <h2 className="font-semibold text-lg mb-4">Add Article</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="flex gap-3">
-            <div className="flex-1">
+          <div className="flex gap-3 flex-wrap">
+            <div className="flex-1 min-w-40">
               <label className="text-xs text-gray-500 block mb-1">Title *</label>
               <input
                 className="w-full border rounded px-3 py-1.5 text-sm"
@@ -122,6 +148,36 @@ export default function Research() {
                 onChange={(e) => setDate(e.target.value)}
               />
             </div>
+          </div>
+
+          {/* Provider + model for extraction */}
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-xs text-gray-500">Extract with:</span>
+            <div className="flex rounded border overflow-hidden">
+              {(["bedrock", "ollama"] as const).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => handleProviderChange(p)}
+                  className={`px-3 py-1 text-xs font-medium ${
+                    provider === p
+                      ? "bg-blue-600 text-white"
+                      : "bg-white text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {p === "bedrock" ? "Bedrock" : `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
+                </button>
+              ))}
+            </div>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="border rounded px-2 py-1 text-xs text-gray-700 bg-white"
+            >
+              {modelOptions.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
           </div>
 
           {/* Tab toggle */}
