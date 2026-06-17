@@ -173,6 +173,56 @@ def _keyword_search(query: str, top_k: int) -> list[dict]:
     ]
 
 
+# ── incremental index helpers ─────────────────────────────────────────────────
+
+def add_document_to_principles(doc_id: str, source_name: str, content: str) -> int:
+    """Incrementally upsert chunks for a single document. Returns chunk count."""
+    if not _HAS_CHROMA:
+        return 0
+    collection = _get_collection()
+    if collection is None:
+        return 0
+    words = content.split()
+    step = CHUNK_SIZE - CHUNK_OVERLAP
+    chunks = []
+    for i in range(0, max(1, len(words) - CHUNK_OVERLAP), step):
+        window = words[i: i + CHUNK_SIZE]
+        if len(window) < 20:
+            continue
+        chunks.append({
+            "id": f"{doc_id}_{i}",
+            "source": source_name,
+            "text": " ".join(window),
+        })
+    if not chunks:
+        return 0
+    batch_size = 100
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start: start + batch_size]
+        collection.upsert(
+            ids=[c["id"] for c in batch],
+            documents=[c["text"] for c in batch],
+            metadatas=[{"source": c["source"]} for c in batch],
+        )
+    return len(chunks)
+
+
+def remove_document_from_principles(doc_id: str) -> None:
+    """Remove all chunks for a given doc_id prefix from the principles collection."""
+    if not _HAS_CHROMA:
+        return
+    collection = _get_collection()
+    if collection is None:
+        return
+    try:
+        existing = collection.get(where={"source": {"$eq": doc_id}})
+        ids_to_delete = existing.get("ids", [])
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+    except Exception:
+        pass
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 def search_principles(query: str, top_k: int = 4) -> list[dict]:

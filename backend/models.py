@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import String, Numeric, Integer, DateTime, ForeignKey, Enum, Text, Boolean
+from sqlalchemy import String, Numeric, Integer, DateTime, ForeignKey, Enum, Text, Boolean, Float, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -121,3 +121,73 @@ class EntityRelationship(Base):
 
     from_entity: Mapped["Entity"] = relationship("Entity", foreign_keys=[from_symbol], back_populates="outgoing")
     to_entity: Mapped["Entity"] = relationship("Entity", foreign_keys=[to_symbol], back_populates="incoming")
+
+
+# ── Screener ──────────────────────────────────────────────────────────────────
+
+class ScreenerRun(Base):
+    """One execution of the value screener — captures the input tickers and thresholds."""
+    __tablename__ = "screener_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tickers: Mapped[str] = mapped_column(Text)           # raw comma-separated input
+    min_criteria: Mapped[int] = mapped_column(Integer, default=4)
+    passed_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    ran_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    results: Mapped[list["ScreenerResult"]] = relationship(
+        "ScreenerResult", back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class ScreenerResult(Base):
+    """Per-ticker result from one screener run."""
+    __tablename__ = "screener_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("screener_runs.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    sector: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    passes_screen: Mapped[bool] = mapped_column(Boolean, default=False)
+    criteria_passed: Mapped[int] = mapped_column(Integer, default=0)
+    # raw fundamentals stored as JSON so the copilot can read them back
+    fundamentals: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    run: Mapped["ScreenerRun"] = relationship("ScreenerRun", back_populates="results")
+
+
+# ── Chat Sessions ─────────────────────────────────────────────────────────────
+
+class ChatSession(Base):
+    """Named copilot session — persists conversation history across page loads."""
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # UUID
+    name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    provider: Mapped[str] = mapped_column(String(16), default="bedrock")
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # compressed older history
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        "ChatMessage", back_populates="session",
+        order_by="ChatMessage.sequence",
+        cascade="all, delete-orphan",
+    )
+
+
+class ChatMessage(Base):
+    """One message turn in a chat session (Bedrock Converse format preserved as JSON)."""
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("chat_sessions.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)        # ordering within session
+    role: Mapped[str] = mapped_column(String(16))         # "user" or "assistant"
+    content: Mapped[dict] = mapped_column(JSON)           # raw Bedrock content block list
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")

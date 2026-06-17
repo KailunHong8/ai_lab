@@ -40,16 +40,31 @@ export const sell = (symbol: string, shares: number) =>
 // ── Agent ─────────────────────────────────────────────────────────────────────
 export const agentChat = (
   message: string,
-  session_id = "default",
+  session_id: string,
   provider = "bedrock",
   model?: string,
+  signal?: AbortSignal,
+  agent_mode = "auto",
 ) =>
   api
-    .post("/api/agent/chat", { message, session_id, provider, model: model || null })
+    .post("/api/agent/chat", { message, session_id, provider, model: model || null, agent_mode }, { signal })
     .then((r) => r.data);
 
-export const clearSession = (session_id: string) =>
-  api.delete(`/api/agent/chat/${session_id}`).then((r) => r.data);
+// ── Sessions ──────────────────────────────────────────────────────────────────
+export const listSessions = () =>
+  api.get("/api/sessions").then((r) => r.data);
+
+export const createSession = (name?: string, provider = "bedrock", model?: string) =>
+  api.post("/api/sessions", { name, provider, model }).then((r) => r.data);
+
+export const getSessionMessages = (session_id: string) =>
+  api.get(`/api/sessions/${session_id}/messages`).then((r) => r.data);
+
+export const renameSession = (session_id: string, name: string) =>
+  api.patch(`/api/sessions/${session_id}/name`, { name }).then((r) => r.data);
+
+export const deleteSession = (session_id: string) =>
+  api.delete(`/api/sessions/${session_id}`).then((r) => r.data);
 
 // ── Knowledge ─────────────────────────────────────────────────────────────────
 export const uploadDocument = (formData: FormData) =>
@@ -85,3 +100,18 @@ export const runSimulation = (payload: {
   run_walk_forward?: boolean;
   run_stress_tests?: boolean;
 }) => api.post("/api/simulation/run", payload).then((r) => r.data);
+
+export const runPortfolioSimulation = (payload: {
+  strategy_description: string;
+  holdings: { ticker: string; weight: number }[];
+  benchmark_symbol?: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  provider?: string;
+  model?: string;
+  run_monte_carlo?: boolean;
+  monte_carlo_sims?: number;
+  run_walk_forward?: boolean;
+  run_stress_tests?: boolean;
+}) => api.post("/api/simulation/run-portfolio", payload).then((r) => r.data);

@@ -10,6 +10,7 @@ interface Doc {
 }
 
 const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
+const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
 
 export default function Research() {
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -21,7 +22,7 @@ export default function Research() {
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [provider, setProvider] = useState<"bedrock" | "ollama">("bedrock");
+  const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
   const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
   const [ollamaModels, setOllamaModels] = useState<string[]>(["qwen2.5:9b"]);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
@@ -46,9 +47,10 @@ export default function Research() {
       .catch(() => {});
   }, []);
 
-  const handleProviderChange = (p: "bedrock" | "ollama") => {
+  const handleProviderChange = (p: "bedrock" | "ollama" | "ollama-cloud") => {
     setProvider(p);
     if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
     else setModel(ollamaModels[0] || "qwen2.5:9b");
   };
 
@@ -110,7 +112,10 @@ export default function Research() {
     setDocs((prev) => prev.filter((d) => d.id !== id));
   };
 
-  const modelOptions = provider === "bedrock" ? BEDROCK_MODELS : ollamaModels;
+  const modelOptions =
+    provider === "bedrock" ? BEDROCK_MODELS :
+    provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
+    ollamaModels;
 
   return (
     <div className="space-y-8">
@@ -154,7 +159,7 @@ export default function Research() {
           <div className="flex items-center gap-2 text-sm">
             <span className="text-xs text-gray-500">Extract with:</span>
             <div className="flex rounded border overflow-hidden">
-              {(["bedrock", "ollama"] as const).map((p) => (
+              {(["bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
                 <button
                   key={p}
                   type="button"
@@ -165,7 +170,7 @@ export default function Research() {
                       : "bg-white text-gray-600 hover:bg-gray-50"
                   }`}
                 >
-                  {p === "bedrock" ? "Bedrock" : `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
+                  {p === "bedrock" ? "Bedrock" : p === "ollama-cloud" ? "Ollama Cloud" : `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
                 </button>
               ))}
             </div>

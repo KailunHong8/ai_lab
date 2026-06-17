@@ -25,6 +25,10 @@ interface Stock {
   symbol: string;
   name: string;
   sector: string;
+  industry?: string;
+  description?: string;
+  ceo?: string;
+  website?: string;
   price: number | null;
   market_cap: number | null;
   pe_ratio: number | null;
@@ -37,8 +41,8 @@ interface Stock {
   criteria_passed: number;
   criteria_detail: CriteriaDetail;
   passes_screen: boolean;
+  ratio_insights?: Record<string, string>;
   theses?: Thesis[];
-  principles_note?: string;
 }
 
 interface Criteria {
@@ -75,6 +79,15 @@ function fmtCap(v: number | null | undefined): string {
   return `$${v}`;
 }
 
+const INSIGHT_LABEL: Record<keyof CriteriaDetail, string> = {
+  low_leverage: "Low Leverage",
+  good_liquidity: "Good Liquidity",
+  fair_valuation: "Fair Valuation",
+  strong_roe: "Strong ROE",
+  strong_roa: "Strong ROA",
+  debt_serviceable: "Debt Serviceable",
+};
+
 export default function Screener() {
   const [tickers, setTickers] = useState(DEFAULT_TICKERS);
   const [minCriteria, setMinCriteria] = useState(4);
@@ -102,14 +115,16 @@ export default function Screener() {
     }
   };
 
-  const displayed = showAll ? results : results.filter((r) => r.passes_screen || r.criteria_passed >= minCriteria);
+  const displayed = showAll
+    ? results
+    : results.filter((r) => r.passes_screen || r.criteria_passed >= minCriteria);
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Value Screener</h1>
       <p className="text-sm text-gray-500">
         Screens stocks using Buffett/Brealey/Munger criteria, then enriches passing
-        stocks with ARK research theses and investing principles.
+        stocks with ARK research theses and investing insights.
       </p>
 
       {/* Controls */}
@@ -162,9 +177,9 @@ export default function Screener() {
 
         {criteria && (
           <div className="text-xs text-gray-400 border-t pt-3">
-            Criteria thresholds — D/E ≤ {criteria.debt_equity_max} | Current Ratio ≥{" "}
+            Thresholds — D/E ≤ {criteria.debt_equity_max} | Current Ratio ≥{" "}
             {criteria.current_ratio_min} | P/B ≤ {criteria.pb_max} | ROE ≥{" "}
-            {criteria.roe_min}% | ROA ≥ {criteria.roa_min}% | Interest Coverage ≥{" "}
+            {criteria.roe_min}% | ROA ≥ {criteria.roa_min}% | Int. Coverage ≥{" "}
             {criteria.interest_coverage_min}
           </div>
         )}
@@ -176,7 +191,8 @@ export default function Screener() {
       {displayed.length > 0 && (
         <div className="space-y-3">
           <p className="text-sm text-gray-500">
-            {results.filter((r) => r.passes_screen).length} of {results.length} stocks pass ≥{minCriteria} criteria.
+            {results.filter((r) => r.passes_screen).length} of {results.length} stocks
+            pass ≥{minCriteria} criteria.
             {!showAll && ` Showing ${displayed.length} passing.`}
           </p>
 
@@ -190,12 +206,16 @@ export default function Screener() {
               {/* Header row */}
               <div
                 className="px-5 py-4 cursor-pointer select-none"
-                onClick={() => setExpanded(expanded === stock.symbol ? null : stock.symbol)}
+                onClick={() =>
+                  setExpanded(expanded === stock.symbol ? null : stock.symbol)
+                }
               >
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <span className="font-bold text-base">{stock.symbol}</span>
-                    <span className="text-sm text-gray-500 truncate max-w-xs">{stock.name}</span>
+                    <span className="text-sm text-gray-600 truncate max-w-xs">
+                      {stock.name}
+                    </span>
                     {stock.sector && (
                       <span className="text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-500">
                         {stock.sector}
@@ -212,13 +232,17 @@ export default function Screener() {
                     >
                       {stock.criteria_passed}/6
                     </span>
-                    <span className="text-gray-400 text-xs">{expanded === stock.symbol ? "▲" : "▼"}</span>
+                    <span className="text-gray-400 text-xs">
+                      {expanded === stock.symbol ? "▲" : "▼"}
+                    </span>
                   </div>
                 </div>
 
                 {/* Criteria pills */}
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {(Object.keys(stock.criteria_detail) as (keyof CriteriaDetail)[]).map((k) => (
+                  {(
+                    Object.keys(stock.criteria_detail) as (keyof CriteriaDetail)[]
+                  ).map((k) => (
                     <span
                       key={k}
                       className={`text-xs px-2 py-0.5 rounded-full ${
@@ -236,14 +260,51 @@ export default function Screener() {
               {/* Expanded detail */}
               {expanded === stock.symbol && (
                 <div className="border-t px-5 py-4 space-y-5 bg-gray-50">
+
+                  {/* Company profile */}
+                  {(stock.description || stock.industry || stock.ceo) && (
+                    <div>
+                      <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">
+                        Company Profile
+                      </h3>
+                      <div className="bg-white rounded p-3 shadow-sm space-y-1">
+                        {stock.industry && (
+                          <p className="text-xs text-gray-500">
+                            <span className="font-medium">Industry:</span> {stock.industry}
+                            {stock.ceo && (
+                              <span className="ml-3">
+                                <span className="font-medium">CEO:</span> {stock.ceo}
+                              </span>
+                            )}
+                          </p>
+                        )}
+                        {stock.description && (
+                          <p className="text-xs text-gray-600 leading-relaxed">
+                            {stock.description}
+                          </p>
+                        )}
+                        {stock.website && (
+                          <a
+                            href={stock.website}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-500 hover:underline"
+                          >
+                            {stock.website}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Fundamentals grid */}
                   <div>
                     <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">
                       Fundamentals
                     </h3>
-                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
                       {[
-                        ["Price", fmt(stock.price, 2, "")],
+                        ["Price", fmt(stock.price, 2)],
                         ["Market Cap", fmtCap(stock.market_cap)],
                         ["P/E", fmt(stock.pe_ratio, 1)],
                         ["P/B", fmt(stock.pb_ratio, 2)],
@@ -253,13 +314,46 @@ export default function Screener() {
                         ["Curr. Ratio", fmt(stock.current_ratio, 2)],
                         ["Gross Margin", fmt(stock.gross_margin, 1, "%")],
                       ].map(([label, value]) => (
-                        <div key={label} className="bg-white rounded p-2 text-center shadow-sm">
+                        <div
+                          key={label}
+                          className="bg-white rounded p-2 text-center shadow-sm"
+                        >
                           <p className="text-xs text-gray-400">{label}</p>
                           <p className="text-sm font-semibold">{value}</p>
                         </div>
                       ))}
                     </div>
                   </div>
+
+                  {/* Financial insights — only for criteria the stock passes */}
+                  {stock.ratio_insights &&
+                    Object.keys(stock.ratio_insights).length > 0 && (
+                      <div>
+                        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">
+                          Financial Insights
+                        </h3>
+                        <div className="space-y-2">
+                          {(
+                            Object.entries(stock.ratio_insights) as [
+                              keyof CriteriaDetail,
+                              string
+                            ][]
+                          ).map(([key, text]) => (
+                            <div
+                              key={key}
+                              className="bg-white rounded p-3 shadow-sm flex gap-3"
+                            >
+                              <span className="text-green-600 text-xs font-semibold mt-0.5 whitespace-nowrap">
+                                {INSIGHT_LABEL[key]}
+                              </span>
+                              <p className="text-xs text-gray-600 leading-relaxed">
+                                {text}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                   {/* ARK Theses */}
                   {stock.theses && stock.theses.length > 0 && (
@@ -269,7 +363,10 @@ export default function Screener() {
                       </h3>
                       <div className="space-y-2">
                         {stock.theses.map((t) => (
-                          <div key={t.id} className="bg-white rounded p-3 shadow-sm text-sm">
+                          <div
+                            key={t.id}
+                            className="bg-white rounded p-3 shadow-sm text-sm"
+                          >
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <span
                                 className={`text-xs font-medium px-1.5 py-0.5 rounded ${
@@ -283,10 +380,13 @@ export default function Screener() {
                                 {t.stance}
                               </span>
                               {t.theme && (
-                                <span className="text-xs text-gray-500">{t.theme}</span>
+                                <span className="text-xs text-gray-500">
+                                  {t.theme}
+                                </span>
                               )}
                               <span className="text-xs text-gray-400 ml-auto">
-                                {t.source}{t.date ? ` · ${t.date}` : ""}
+                                {t.source}
+                                {t.date ? ` · ${t.date}` : ""}
                               </span>
                             </div>
                             <ul className="list-disc list-inside text-xs text-gray-600 space-y-0.5">
@@ -299,18 +399,6 @@ export default function Screener() {
                       </div>
                     </div>
                   )}
-
-                  {/* Principles note */}
-                  {stock.principles_note && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">
-                        Principles Library
-                      </h3>
-                      <p className="text-xs text-gray-600 bg-white rounded p-3 shadow-sm leading-relaxed">
-                        {stock.principles_note}
-                      </p>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
@@ -319,7 +407,9 @@ export default function Screener() {
       )}
 
       {!loading && results.length === 0 && !error && (
-        <p className="text-sm text-gray-400">Enter tickers above and run the screen.</p>
+        <p className="text-sm text-gray-400">
+          Enter tickers above and run the screen.
+        </p>
       )}
     </div>
   );

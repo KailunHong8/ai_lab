@@ -73,11 +73,11 @@ async def upload_document(
 
             await db.commit()
 
-            # Run thesis extraction in the background — don't block the HTTP response.
-            # Documents show as "Pending" in the UI until extraction completes.
+            # Background: thesis extraction + incremental Chroma index
             if new_doc_ids:
                 import asyncio
                 from backend.services import thesis_extractor
+                from backend.services.ark_research import add_document_to_ark
                 from backend.db import SessionLocal
 
                 _provider, _model = provider, model
@@ -90,7 +90,12 @@ async def upload_document(
                                     did, content, bg_db, provider=_provider, model=_model
                                 )
                         except Exception:
-                            pass  # log if needed, but don't crash the background task
+                            pass
+                        # Incremental index into ARK Chroma collection
+                        try:
+                            await asyncio.to_thread(add_document_to_ark, did, did, content)
+                        except Exception:
+                            pass
 
                 asyncio.create_task(_extract_all())
 
@@ -139,8 +144,20 @@ async def upload_document(
     await db.commit()
     await db.refresh(doc)
 
+    import asyncio
     from backend.services import thesis_extractor
+    from backend.services.research import add_document_to_principles
+    from backend.services.ark_research import add_document_to_ark
+
+    is_ark = (source or "").upper().startswith("ARK")
+
     await thesis_extractor.extract_and_save(doc_id, content, db, provider=provider, model=model)
+
+    # Incremental Chroma index — ARK docs go to ark_newsletter, others to principles
+    if is_ark:
+        await asyncio.to_thread(add_document_to_ark, doc_id, doc_id, content)
+    else:
+        await asyncio.to_thread(add_document_to_principles, doc_id, doc_id, content)
 
     return {"status": "ok", "id": doc_id, "title": title}
 
@@ -166,13 +183,24 @@ async def list_documents(
 
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
-    """Remove a document and its extracted theses."""
+    """Remove a document, its extracted theses, and its Chroma chunks."""
+    import asyncio
     result = await db.execute(select(Document).where(Document.id == doc_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+    is_ark = (doc.source or "").upper().startswith("ARK")
     await db.delete(doc)
     await db.commit()
+
+    # Remove from Chroma collection
+    if is_ark:
+        from backend.services.ark_research import remove_document_from_ark
+        await asyncio.to_thread(remove_document_from_ark, doc_id)
+    else:
+        from backend.services.research import remove_document_from_principles
+        await asyncio.to_thread(remove_document_from_principles, doc_id)
+
     return {"status": "deleted"}
 
 
@@ -202,8 +230,17 @@ async def search_docs(q: str, limit: int = 4):
 
 @router.post("/reindex")
 async def reindex_principles():
-    """Force a full re-index of the investing_research/ library into chromadb."""
+    """Admin: force a full re-index of the investing_research/ library into chromadb."""
     import asyncio
     from backend.services.research import rebuild_index
     count = await asyncio.to_thread(rebuild_index)
+    return {"status": "ok", "chunks_indexed": count}
+
+
+@router.post("/reindex-ark")
+async def reindex_ark():
+    """Admin: force a full re-index of the ARK newsletter collection into chromadb."""
+    import asyncio
+    from backend.services.ark_research import rebuild_ark_index
+    count = await asyncio.to_thread(rebuild_ark_index)
     return {"status": "ok", "chunks_indexed": count}

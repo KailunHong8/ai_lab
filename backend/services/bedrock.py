@@ -7,12 +7,16 @@ Tools available to the agent:
   - search_theses(entity, theme)   → current market opinions from uploaded research
   - get_entity_graph(symbol)       → supply chain / competitor / customer graph
   - search_principles(query)       → timeless investing principles from the book library
+  - search_ark_newsletter(query)   → fuzzy semantic recall over raw ARK newsletter text
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
 import boto3
+from botocore.config import Config
 from dotenv import load_dotenv
 
 from backend.services import fmp as fmp_service
@@ -28,7 +32,11 @@ _bedrock = None
 def _client():
     global _bedrock
     if _bedrock is None:
-        _bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+        _bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name=BEDROCK_REGION,
+            config=Config(read_timeout=300),
+        )
     return _bedrock
 
 
@@ -110,6 +118,30 @@ TOOLS = [
     },
     {
         "toolSpec": {
+            "name": "get_screener_history",
+            "description": (
+                "Retrieve the user's historical stock screener runs from the database. "
+                "Returns the most recent value screens with their tickers, criteria, pass/fail results, "
+                "and key fundamentals (P/E, P/B, ROE, ROA, D/E, etc.) for each stock. "
+                "Use this to reference previous screens in strategy discussions, compare how a stock "
+                "scored across different dates, or identify stocks that consistently pass quality filters."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "How many recent runs to fetch (default 5, max 20)."
+                        }
+                    },
+                    "required": [],
+                }
+            },
+        }
+    },
+    {
+        "toolSpec": {
             "name": "search_principles",
             "description": (
                 "Search a curated library of investing and finance books "
@@ -134,22 +166,52 @@ TOOLS = [
             },
         }
     },
+    {
+        "toolSpec": {
+            "name": "search_ark_newsletter",
+            "description": (
+                "Fuzzy semantic search over raw ARK Invest newsletter text. "
+                "Use for open-ended recall questions like 'where did ARK discuss exchange vertical integration?' "
+                "or 'what did ARK say about energy storage costs?'. "
+                "Returns citation snippets with source filename. "
+                "For precise structured questions like 'what is ARK stance on NVDA?', prefer search_theses instead."
+            ),
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Fuzzy topic or phrase to search for in ARK newsletters"
+                        }
+                    },
+                    "required": ["query"],
+                }
+            },
+        }
+    },
 ]
 
 SYSTEM_PROMPT = (
-    "You are Quant, an AI trading copilot with access to two distinct knowledge sources — "
+    "You are Quant, an AI trading copilot with access to three distinct knowledge sources — "
     "treat them very differently:\n\n"
     "1. INVESTING PRINCIPLES (search_principles tool): A curated library of classic investing and finance books "
     "(Brealey-Myers-Allen, Shiller, Poor Charlie's Almanack, and others added over time). "
     "This is established theory and timeless wisdom. Treat it as ground truth. "
     "Use it to frame the 'why' — valuation logic, risk models, mental models, capital allocation discipline.\n\n"
-    "2. CURRENT MARKET OPINIONS (search_theses tool): Research uploaded by the user — newsletters, ARK reports, "
-    "analyst notes, etc. These may be forecasts or opinions. Always label them as such and note the source and date. "
+    "2. CURRENT MARKET OPINIONS (search_theses tool): Structured investment theses extracted from uploaded research — "
+    "newsletters, ARK reports, analyst notes, etc. These are indexed by entity and theme for exact lookup. "
+    "Always label claims as facts or forecasts and note the source and date. "
     "Use them for the 'what and when' — specific stocks, near-term themes, catalysts.\n\n"
+    "3. ARK NEWSLETTER RAW TEXT (search_ark_newsletter tool): The full unstructured text of ARK Invest newsletters. "
+    "Use for fuzzy recall — e.g. 'where did ARK discuss X?', 'what did ARK say about Y topic?'. "
+    "Returns citation snippets. For precise stance questions use search_theses; for open-ended recall use this.\n\n"
     "Reasoning pattern: ground every investment argument in principles first, then layer on current opinions. "
     "For example: 'Brealey's CAPM implies a required return of X% for this beta — ARK's thesis forecasts Y%, "
     "which clears that hurdle [or does not].'\n\n"
-    "You also have access to real-time market data and the user's paper-trading portfolio. "
+    "You also have access to real-time market data, the user's paper-trading portfolio, "
+    "and their historical screener runs (get_screener_history). "
+    "When discussing specific stocks, check if they appear in past screens and note how they scored. "
     "Always cite which source (book title, or thesis source + date) your reasoning draws from. "
     "Never confuse a verified fact with a forecast. "
     "You operate in a paper-trading simulation — no real money is at risk."
@@ -190,6 +252,24 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
         results = search_principles(tool_input.get("query", ""), top_k=4)
         return json.dumps(results)
 
+    if name == "search_ark_newsletter":
+        from backend.services.ark_research import search_ark
+        results = search_ark(tool_input.get("query", ""), top_k=4)
+        return json.dumps(results)
+
+    if name == "get_screener_history":
+        import httpx as _httpx
+        limit = min(int(tool_input.get("limit") or 5), 20)
+        try:
+            async with _httpx.AsyncClient(timeout=10) as _client:
+                resp = await _client.get(
+                    "http://localhost:8000/api/screener/history",
+                    params={"limit": limit},
+                )
+                return resp.text
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
     return json.dumps({"error": f"unknown tool: {name}"})
 
 
@@ -197,51 +277,67 @@ async def chat(
     message: str,
     history: list[dict],
     portfolio_snapshot: dict | None = None,
+    session_id: str = "",
 ) -> str:
     """
-    Run one agentic turn.
-
-    `history` is a list of {role, content} dicts for the ongoing session.
-    Returns the assistant's final text reply.
+    Run one agentic turn. Emits structured logs via LLMLogger (structlog + optional Langfuse).
     """
+    from backend.services.llm_logger import LLMLogger
+
     messages = list(history) + [{"role": "user", "content": [{"text": message}]}]
-
     client = _client()
+    total_input_tokens = 0
+    total_output_tokens = 0
 
-    while True:
-        response = client.converse(
-            modelId=BEDROCK_MODEL_ID,
-            system=[{"text": SYSTEM_PROMPT}],
-            messages=messages,
-            toolConfig={"tools": TOOLS},
-        )
+    async with LLMLogger("bedrock", BEDROCK_MODEL_ID, session_id, message) as trace:
+        while True:
+            response = await asyncio.to_thread(
+                functools.partial(
+                    client.converse,
+                    modelId=BEDROCK_MODEL_ID,
+                    system=[{"text": SYSTEM_PROMPT}],
+                    messages=messages,
+                    toolConfig={"tools": TOOLS},
+                )
+            )
 
-        output_message = response["output"]["message"]
-        messages.append(output_message)
-        stop_reason = response["stopReason"]
+            usage = response.get("usage", {})
+            total_input_tokens += usage.get("inputTokens", 0)
+            total_output_tokens += usage.get("outputTokens", 0)
 
-        if stop_reason == "tool_use":
-            tool_results = []
-            for block in output_message["content"]:
-                if block.get("toolUse"):
-                    tool_use = block["toolUse"]
-                    result_str = await _dispatch_tool(
-                        tool_use["name"], tool_use["input"], portfolio_snapshot
-                    )
-                    tool_results.append(
-                        {
-                            "toolResult": {
-                                "toolUseId": tool_use["toolUseId"],
-                                "content": [{"text": result_str}],
+            output_message = response["output"]["message"]
+            messages.append(output_message)
+            stop_reason = response["stopReason"]
+
+            if stop_reason == "tool_use":
+                tool_results = []
+                for block in output_message["content"]:
+                    if block.get("toolUse"):
+                        tool_use = block["toolUse"]
+                        result_str = await _dispatch_tool(
+                            tool_use["name"], tool_use["input"], portfolio_snapshot
+                        )
+                        trace.add_tool_use(tool_use["name"], tool_use["input"], result_str)
+                        tool_results.append(
+                            {
+                                "toolResult": {
+                                    "toolUseId": tool_use["toolUseId"],
+                                    "content": [{"text": result_str}],
+                                }
                             }
-                        }
+                        )
+                messages.append({"role": "user", "content": tool_results})
+                continue
+
+            # end_turn or max_tokens
+            for block in output_message["content"]:
+                if "text" in block:
+                    trace.finish(
+                        block["text"],
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens,
                     )
-            messages.append({"role": "user", "content": tool_results})
-            continue
+                    return block["text"]
 
-        # end_turn or max_tokens
-        for block in output_message["content"]:
-            if "text" in block:
-                return block["text"]
-
-        return ""
+            trace.finish("", input_tokens=total_input_tokens, output_tokens=total_output_tokens)
+            return ""

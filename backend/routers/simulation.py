@@ -51,10 +51,20 @@ STRESS_PERIODS = {
 # ── LLM parsing (provider-agnostic) ──────────────────────────────────────────
 
 async def _parse_strategy(description: str, provider: str, model: Optional[str]) -> dict:
-    if provider == "ollama":
+    if provider in ("ollama", "ollama-cloud"):
         from backend.services import ollama_client
-        _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
-        result = await ollama_client.extract_json(description, PARSE_SYSTEM, model=_model)
+        if provider == "ollama-cloud":
+            _api_key = os.getenv("OLLAMA_API_KEY", "")
+            if not _api_key:
+                raise ValueError("OLLAMA_API_KEY not set")
+            _model = model or ollama_client.OLLAMA_CLOUD_DEFAULT_MODEL
+            result = await ollama_client.extract_json(
+                description, PARSE_SYSTEM, model=_model,
+                host=ollama_client.OLLAMA_CLOUD_HOST, api_key=_api_key,
+            )
+        else:
+            _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
+            result = await ollama_client.extract_json(description, PARSE_SYSTEM, model=_model)
         if result and result != {"theses": [], "relationships": []}:
             return result
         raise ValueError("Ollama returned no parseable strategy JSON")
@@ -373,6 +383,100 @@ async def _stress_tests(symbol: str, rules: dict, initial_capital: float) -> lis
     return results
 
 
+# ── Portfolio backtest helpers ────────────────────────────────────────────────
+
+def _align_portfolio(
+    leg_results: list[dict],
+    tickers: list[str],
+    weights: list[float],
+    initial_capital: float,
+) -> dict:
+    """
+    Merge per-leg equity curves into a single portfolio equity curve.
+    Each leg already runs with its weight × initial_capital slice, so we
+    simply sum the daily values across legs on dates common to all legs.
+    Returns blended equity_curve, daily_returns, final_value, and per-ticker info.
+    """
+    # Build date → value maps per leg
+    leg_maps: list[dict[str, float]] = [
+        {pt["date"]: pt["value"] for pt in r["equity_curve"]}
+        for r in leg_results
+    ]
+
+    # Intersect dates (all legs must have data on that date)
+    all_date_sets = [set(m.keys()) for m in leg_maps]
+    common_dates = sorted(set.intersection(*all_date_sets)) if all_date_sets else []
+
+    equity_curve: list[dict] = []
+    daily_returns: list[float] = []
+    prev_value = initial_capital
+
+    for date in common_dates:
+        total = sum(m[date] for m in leg_maps)
+        equity_curve.append({"date": date, "value": round(total, 2)})
+        ret = (total - prev_value) / prev_value if prev_value else 0.0
+        daily_returns.append(ret)
+        prev_value = total
+
+    final_value = equity_curve[-1]["value"] if equity_curve else initial_capital
+
+    # Per-ticker contribution
+    per_ticker = []
+    for i, (ticker, weight, res) in enumerate(zip(tickers, weights, leg_results)):
+        leg_cap = initial_capital * weight
+        leg_final = res["final_value"]
+        leg_pnl_pct = (leg_final - leg_cap) / leg_cap * 100 if leg_cap else 0.0
+        ts = _trade_stats(res["trades"])
+        per_ticker.append({
+            "ticker": ticker,
+            "weight_pct": round(weight * 100, 1),
+            "allocated": round(leg_cap, 2),
+            "final_value": round(leg_final, 2),
+            "pnl_pct": round(leg_pnl_pct, 2),
+            "num_trades": ts["num_trades"],
+            "win_rate": ts["win_rate"],
+        })
+
+    return {
+        "equity_curve": equity_curve,
+        "daily_returns": daily_returns,
+        "final_value": final_value,
+        "per_ticker": per_ticker,
+    }
+
+
+async def _portfolio_stress_tests(
+    tickers: list[str],
+    weights: list[float],
+    rules: dict,
+    initial_capital: float,
+) -> list[dict]:
+    results = []
+    for key, (start, end, label) in STRESS_PERIODS.items():
+        leg_results = []
+        valid = True
+        for ticker, weight in zip(tickers, weights):
+            candles = await fmp_service.get_history(ticker, start, end)
+            if len(candles) < 10:
+                valid = False
+                break
+            leg_cap = initial_capital * weight
+            leg_results.append(_run_backtest(candles, rules, leg_cap))
+        if not valid:
+            results.append({"period": label, "error": "insufficient data for one or more tickers"})
+            continue
+        blended = _align_portfolio(leg_results, tickers, weights, initial_capital)
+        pnl_pct = (blended["final_value"] - initial_capital) / initial_capital * 100
+        results.append({
+            "period": label,
+            "start": start,
+            "end": end,
+            "pnl_pct": round(pnl_pct, 2),
+            "equity_curve": blended["equity_curve"],
+        })
+    return results
+
+
 # ── Request / response models ─────────────────────────────────────────────────
 
 class SimulationRequest(BaseModel):
@@ -381,7 +485,27 @@ class SimulationRequest(BaseModel):
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
-    provider: str = "bedrock"          # "bedrock" or "ollama"
+    provider: str = "bedrock"          # "bedrock", "ollama", or "ollama-cloud"
+    model: Optional[str] = None
+    run_monte_carlo: bool = True
+    monte_carlo_sims: int = 300
+    run_walk_forward: bool = True
+    run_stress_tests: bool = True
+    benchmark_symbol: str = "SPY"
+
+
+class PortfolioHolding(BaseModel):
+    ticker: str
+    weight: float   # 0.0–1.0; weights are normalised server-side if they don't sum to 1
+
+
+class PortfolioSimulationRequest(BaseModel):
+    strategy_description: str
+    holdings: list[PortfolioHolding]   # list of {ticker, weight}
+    start_date: str
+    end_date: str
+    initial_capital: float = 10000.0
+    provider: str = "bedrock"
     model: Optional[str] = None
     run_monte_carlo: bool = True
     monte_carlo_sims: int = 300
@@ -461,5 +585,107 @@ async def run_simulation(req: SimulationRequest):
                 payload[{"mc": "monte_carlo", "wf": "walk_forward", "st": "stress_tests"}[key]] = {"error": str(result)}
             else:
                 payload[{"mc": "monte_carlo", "wf": "walk_forward", "st": "stress_tests"}[key]] = result
+
+    return payload
+
+
+# ── Portfolio simulation endpoint ─────────────────────────────────────────────
+
+@router.post("/run-portfolio")
+async def run_portfolio_simulation(req: PortfolioSimulationRequest):
+    if not req.holdings:
+        raise HTTPException(422, "holdings list is empty")
+
+    # Normalise weights so they sum to 1
+    total_w = sum(h.weight for h in req.holdings)
+    if total_w <= 0:
+        raise HTTPException(422, "weights must be positive")
+    tickers = [h.ticker.upper() for h in req.holdings]
+    weights = [h.weight / total_w for h in req.holdings]
+
+    # 1. Parse strategy rules (shared across all legs)
+    try:
+        rules = await _parse_strategy(req.strategy_description, req.provider, req.model)
+    except Exception as exc:
+        raise HTTPException(422, f"Failed to parse strategy: {exc}")
+
+    # 2. Fetch candles for all tickers + benchmark in parallel
+    async def _fetch(symbol: str) -> list[dict]:
+        return await fmp_service.get_history(symbol, req.start_date, req.end_date)
+
+    all_symbols = tickers + [req.benchmark_symbol]
+    fetched = await asyncio.gather(*[_fetch(s) for s in all_symbols], return_exceptions=True)
+
+    candles_per_ticker: list[list[dict]] = []
+    for i, ticker in enumerate(tickers):
+        result = fetched[i]
+        if isinstance(result, Exception) or not result:
+            raise HTTPException(404, f"No historical data for {ticker} ({req.start_date}–{req.end_date})")
+        candles_per_ticker.append(result)
+
+    bm_candles = fetched[-1]
+    bm_rets: list[float] = []
+    if not isinstance(bm_candles, Exception) and bm_candles:
+        closes = [float(c["close"]) for c in bm_candles]
+        bm_rets = [(closes[i] - closes[i-1]) / closes[i-1] if i > 0 else 0.0 for i in range(len(closes))]
+
+    # 3. Run per-leg backtests in parallel threads
+    leg_results = await asyncio.gather(*[
+        asyncio.to_thread(_run_backtest, candles, rules, req.initial_capital * w)
+        for candles, w in zip(candles_per_ticker, weights)
+    ])
+
+    # 4. Blend into portfolio equity curve
+    blended = await asyncio.to_thread(
+        _align_portfolio, list(leg_results), tickers, weights, req.initial_capital
+    )
+
+    # 5. Compute portfolio-level metrics on the blended curve
+    ts_all = {"num_trades": sum(r["num_trades"] for r in [_trade_stats(lr["trades"]) for lr in leg_results]),
+               "win_rate": 0.0}
+    all_pairs = []
+    for lr in leg_results:
+        buys  = [t for t in lr["trades"] if t["action"] == "BUY"]
+        sells = [t for t in lr["trades"] if t["action"] == "SELL"]
+        all_pairs.extend(zip(buys, sells))
+    ts_all["win_rate"] = round(sum(1 for b, s in all_pairs if s["price"] > b["price"]) / len(all_pairs), 4) if all_pairs else 0.0
+
+    met = _metrics(
+        blended["daily_returns"],
+        req.initial_capital,
+        blended["final_value"],
+        blended["equity_curve"],
+        bm_rets or None,
+    )
+
+    payload: dict = {
+        **met,
+        **ts_all,
+        "equity_curve":  blended["equity_curve"],
+        "trades":        [],    # aggregate trades not meaningful at portfolio level
+        "parsed_rules":  rules,
+        "benchmark":     req.benchmark_symbol,
+        "per_ticker":    blended["per_ticker"],
+    }
+
+    # 6. Optional analytics on blended curve
+    tasks: dict = {}
+    if req.run_monte_carlo:
+        tasks["mc"] = asyncio.to_thread(
+            _monte_carlo, blended["daily_returns"], req.initial_capital, req.monte_carlo_sims
+        )
+    if req.run_walk_forward:
+        # Walk-forward on longest common candle set (first ticker as proxy)
+        tasks["wf"] = asyncio.to_thread(
+            _walk_forward, candles_per_ticker[0], rules, req.initial_capital * weights[0]
+        )
+    if req.run_stress_tests:
+        tasks["st"] = _portfolio_stress_tests(tickers, weights, rules, req.initial_capital)
+
+    if tasks:
+        results_gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        key_map = {"mc": "monte_carlo", "wf": "walk_forward", "st": "stress_tests"}
+        for key, result in zip(tasks.keys(), results_gathered):
+            payload[key_map[key]] = {"error": str(result)} if isinstance(result, Exception) else result
 
     return payload

@@ -1,9 +1,11 @@
 """
-Ollama local LLM client — backup for AWS Bedrock.
-Uses the Ollama REST API at http://localhost:11434 (configurable via OLLAMA_HOST).
+Ollama LLM client — local and cloud.
 
-Default model: OLLAMA_MODEL env var, falls back to "qwen2.5:9b".
-Update OLLAMA_MODEL to match whatever you pulled, e.g. "qwen3:8b".
+Local:  http://localhost:11434  (configurable via OLLAMA_HOST)
+Cloud:  https://ollama.com      (requires OLLAMA_API_KEY)
+
+Default local model:  OLLAMA_MODEL env var, falls back to "qwen2.5:9b".
+Default cloud model:  OLLAMA_CLOUD_MODEL env var, falls back to "gpt-oss:120b".
 """
 from __future__ import annotations
 
@@ -17,6 +19,11 @@ from backend.services.bedrock import TOOLS, SYSTEM_PROMPT, _dispatch_tool
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:9b")
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "300"))
+
+OLLAMA_CLOUD_HOST = "https://ollama.com"
+OLLAMA_CLOUD_DEFAULT_MODEL = os.getenv("OLLAMA_CLOUD_MODEL", "gpt-oss:120b")
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 
 
 def _tools_to_ollama(tools: list) -> list:
@@ -90,67 +97,96 @@ async def chat(
     history: list[dict],
     portfolio_snapshot: dict | None = None,
     model: str = OLLAMA_DEFAULT_MODEL,
+    session_id: str = "",
+    host: str = OLLAMA_HOST,
+    api_key: str = "",
 ) -> str:
     """
-    Agentic chat turn via Ollama. Same signature as bedrock.chat.
+    Agentic chat turn via Ollama (local or cloud).
+    Pass host=OLLAMA_CLOUD_HOST and api_key=OLLAMA_API_KEY for cloud.
     Reuses the same TOOLS list and _dispatch_tool from bedrock.py.
     """
+    from backend.services.llm_logger import LLMLogger
+
     ollama_tools = _tools_to_ollama(TOOLS)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(_history_to_ollama(history))
     messages.append({"role": "user", "content": message})
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        while True:
-            try:
-                resp = await client.post(
-                    f"{OLLAMA_HOST}/api/chat",
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "tools": ollama_tools,
-                        "stream": False,
-                    },
-                )
-                resp.raise_for_status()
-            except httpx.ConnectError:
-                return "Ollama is not running. Start it with `ollama serve` and try again."
-            except httpx.HTTPStatusError as exc:
-                return f"Ollama error {exc.response.status_code}: {exc.response.text[:200]}"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    provider_label = "ollama-cloud" if host == OLLAMA_CLOUD_HOST else "ollama"
 
-            data = resp.json()
-            assistant_msg = data.get("message", {})
-            messages.append(assistant_msg)
-
-            tool_calls = assistant_msg.get("tool_calls") or []
-            if not tool_calls:
-                return assistant_msg.get("content", "")
-
-            for tc in tool_calls:
-                fn = tc.get("function", {})
+    async with LLMLogger(provider_label, model, session_id, message) as trace:
+        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT, headers=headers) as client:
+            while True:
                 try:
-                    args = fn.get("arguments", {})
-                    if isinstance(args, str):
-                        args = json.loads(args)
-                    result = await _dispatch_tool(fn["name"], args, portfolio_snapshot)
-                except Exception as exc:
-                    result = json.dumps({"error": str(exc)})
+                    resp = await client.post(
+                        f"{host}/api/chat",
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "tools": ollama_tools,
+                            "stream": False,
+                        },
+                    )
+                    resp.raise_for_status()
+                except httpx.ConnectError:
+                    reply = "Ollama is not running. Start it with `ollama serve` and try again."
+                    trace.finish(reply)
+                    return reply
+                except httpx.TimeoutException:
+                    reply = "Ollama timed out. The model may still be loading — please try again."
+                    trace.finish(reply)
+                    return reply
+                except httpx.HTTPStatusError as exc:
+                    reply = f"Ollama error {exc.response.status_code}: {exc.response.text[:200]}"
+                    trace.finish(reply)
+                    return reply
 
-                messages.append({"role": "tool", "content": result})
+                data = resp.json()
+                assistant_msg = data.get("message", {})
+                messages.append(assistant_msg)
+
+                tool_calls = assistant_msg.get("tool_calls") or []
+                if not tool_calls:
+                    reply = assistant_msg.get("content", "")
+                    trace.finish(reply)
+                    return reply
+
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    try:
+                        args = fn.get("arguments", {})
+                        if isinstance(args, str):
+                            args = json.loads(args)
+                        result = await _dispatch_tool(fn["name"], args, portfolio_snapshot)
+                    except Exception as exc:
+                        result = json.dumps({"error": str(exc)})
+
+                    trace.add_tool_use(fn.get("name", "unknown"), args if isinstance(args, dict) else {}, result)
+                    messages.append({"role": "tool", "content": result})
 
 
-async def extract_json(content: str, prompt: str, model: str = OLLAMA_DEFAULT_MODEL) -> dict:
+async def extract_json(
+    content: str,
+    prompt: str,
+    model: str = OLLAMA_DEFAULT_MODEL,
+    host: str = OLLAMA_HOST,
+    api_key: str = "",
+) -> dict:
     """
     JSON extraction via Ollama — no tool use, just structured output.
-    Used by thesis_extractor for document parsing.
+    Used by thesis_extractor for document parsing and strategy parser.
+    Pass host=OLLAMA_CLOUD_HOST and api_key for cloud.
     """
     truncated = content[:12000] if len(content) > 12000 else content
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=180.0, headers=headers) as client:
         try:
             resp = await client.post(
-                f"{OLLAMA_HOST}/api/chat",
+                f"{host}/api/chat",
                 json={
                     "model": model,
                     "messages": [

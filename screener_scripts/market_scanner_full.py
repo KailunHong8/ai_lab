@@ -269,6 +269,7 @@ def fetch_stock_fundamentals(symbol):
             'market_cap': info.get('marketCap', 0),
             'pb_ratio': info.get('priceToBook'),
             'pe_ratio': info.get('trailingPE') or info.get('forwardPE'),
+            'peg_ratio': info.get('pegRatio'),
             'debt_equity': debt_equity or info.get('debtToEquity'),
             'current_ratio': current_ratio or info.get('currentRatio'),
             'roe': roe or info.get('returnOnEquity'),
@@ -369,11 +370,11 @@ print(f"  Errors: {error_count}")
 print(f"  Rate: {len(stock_universe)/elapsed_time:.1f} stocks/second")
 
 # ============================================================================
-# Apply Buffett Criteria
+# Apply Sector-Aware Criteria
 # ============================================================================
 
 print("\n" + "=" * 70)
-print("Applying Buffett Value Criteria")
+print("Applying Sector-Aware Value Criteria")
 print("=" * 70)
 
 df = pd.DataFrame(all_fundamentals)
@@ -382,26 +383,84 @@ if len(df) == 0:
     print("\n✗ No data collected. Check errors above.")
     exit(1)
 
-# Apply filters
-df['buffett_pb'] = df['pb_ratio'].apply(lambda x: 1 if x and 0 < x < 1.5 else 0)
-df['buffett_de'] = df['debt_equity'].apply(lambda x: 1 if x and 0 < x < 0.5 else 0)
-df['buffett_cr'] = df['current_ratio'].apply(lambda x: 1 if x and 1.5 < x < 2.5 else 0)
-df['buffett_roe'] = df['roe'].apply(lambda x: 1 if x and x > 0.08 else 0)
-df['buffett_roa'] = df['roa'].apply(lambda x: 1 if x and x > 0.06 else 0)
-df['buffett_ic'] = df['interest_coverage'].apply(lambda x: 1 if x and x > 5 else 0)
+BANK_SECTORS    = {'Financial Services', 'Financials'}
+REIT_SECTORS    = {'Real Estate'}
+UTILITY_SECTORS = {'Utilities'}
+
+def sector_of(row):
+    return str(row.get('sector', 'Unknown'))
+
+# ── Criterion 1: PEG < 2.0  (replaces raw PE) ─────────────────────────────
+def _peg(row):
+    v = row['peg_ratio']
+    return 1 if v and 0 < v < 2.0 else 0
+
+# ── Criterion 2: PB < (ROE% × 0.5)  (growth-adjusted PB) ─────────────────
+def _pb(row):
+    pb  = row['pb_ratio']
+    roe = row['roe']
+    if not pb or pb <= 0:
+        return 0
+    if not roe or roe <= 0:
+        return 0
+    threshold = (roe * 100) * 0.5   # ROE is a decimal (e.g. 0.20 → threshold 10)
+    return 1 if pb < threshold else 0
+
+# ── Criterion 3: D/E — banks use ROA > 1%, everyone else D/E < 0.5 ────────
+def _de(row):
+    s = sector_of(row)
+    if s in BANK_SECTORS:
+        roa = row['roa']
+        return 1 if roa and roa > 0.01 else 0
+    de = row['debt_equity']
+    return 1 if de and 0 < de < 0.5 else 0
+
+# ── Criterion 4: Current ratio 1.5–2.5 ────────────────────────────────────
+def _cr(row):
+    v = row['current_ratio']
+    return 1 if v and 1.5 < v < 2.5 else 0
+
+# ── Criterion 5: Sector-adjusted ROE ──────────────────────────────────────
+def _roe(row):
+    s   = sector_of(row)
+    roe = row['roe']
+    if not roe:
+        return 0
+    if s in BANK_SECTORS:
+        threshold = 0.08
+    elif s in {'Technology', 'Communication Services'}:
+        threshold = 0.15
+    else:
+        threshold = 0.10
+    return 1 if roe > threshold else 0
+
+# ── Criterion 6: Interest coverage > 5×  (skip REITs + Utilities) ─────────
+def _ic(row):
+    s = sector_of(row)
+    if s in REIT_SECTORS | UTILITY_SECTORS:
+        return 1   # structurally high leverage is normal — criterion N/A
+    ic = row['interest_coverage']
+    return 1 if ic and ic > 5 else 0
+
+df['crit_peg'] = df.apply(_peg, axis=1)
+df['crit_pb']  = df.apply(_pb,  axis=1)
+df['crit_de']  = df.apply(_de,  axis=1)
+df['crit_cr']  = df.apply(_cr,  axis=1)
+df['crit_roe'] = df.apply(_roe, axis=1)
+df['crit_ic']  = df.apply(_ic,  axis=1)
 
 df['buffett_score'] = (
-    df['buffett_pb'] + df['buffett_de'] + df['buffett_cr'] +
-    df['buffett_roe'] + df['buffett_roa'] + df['buffett_ic']
+    df['crit_peg'] + df['crit_pb'] + df['crit_de'] +
+    df['crit_cr']  + df['crit_roe'] + df['crit_ic']
 )
 
-# Filter for value stocks (≥4/6 criteria)
-value_stocks = df[df['buffett_score'] >= 4].copy()
+# Filter for value stocks (≥5/6 criteria, per original Run 1 quality bar)
+value_stocks = df[df['buffett_score'] >= 5].copy()
 value_stocks = value_stocks.sort_values('buffett_score', ascending=False)
 
 print(f"\nResults:")
 print(f"  Scanned: {len(df)} stocks")
-print(f"  Passed ≥4/6 criteria: {len(value_stocks)} stocks ({len(value_stocks)/len(df)*100:.1f}%)")
+print(f"  Passed ≥5/6 criteria: {len(value_stocks)} stocks ({len(value_stocks)/len(df)*100:.1f}%)")
 print(f"  Perfect 6/6 score: {len(value_stocks[value_stocks['buffett_score']==6])} stocks")
 
 # ============================================================================
@@ -413,19 +472,21 @@ print("Top 30 Value Stocks")
 print("=" * 70)
 
 if len(value_stocks) > 0:
-    print("\n" + "-" * 100)
-    print(f"{'Rank':<5} {'Symbol':<8} {'Company':<30} {'Sector':<20} {'Score':<7} {'P/B':<8}")
-    print("-" * 100)
-    
+    print("\n" + "-" * 110)
+    print(f"{'Rank':<5} {'Symbol':<8} {'Company':<30} {'Sector':<20} {'Score':<7} {'PEG':<7} {'P/B':<7} {'ROE%':<7}")
+    print("-" * 110)
+
     for idx, row in value_stocks.head(30).iterrows():
         rank = value_stocks.index.get_loc(idx) + 1
         symbol = row['symbol']
         company = row['company_name'][:28]
         sector = row['sector'][:18]
         score = f"{row['buffett_score']:.0f}/6"
-        pb = f"{row['pb_ratio']:.2f}" if row['pb_ratio'] and row['pb_ratio'] > 0 else "N/A"
-        
-        print(f"{rank:<5} {symbol:<8} {company:<30} {sector:<20} {score:<7} {pb:<8}")
+        peg = f"{row['peg_ratio']:.2f}" if row.get('peg_ratio') and row['peg_ratio'] > 0 else "N/A"
+        pb  = f"{row['pb_ratio']:.2f}"  if row.get('pb_ratio')  and row['pb_ratio']  > 0 else "N/A"
+        roe = f"{row['roe']*100:.1f}%"  if row.get('roe')       and row['roe']        > 0 else "N/A"
+
+        print(f"{rank:<5} {symbol:<8} {company:<30} {sector:<20} {score:<7} {peg:<7} {pb:<7} {roe:<7}")
 
 # ============================================================================
 # Export Results
@@ -483,11 +544,19 @@ Scan Performance:
   Errors: {error_count}
   Time: {elapsed_time/60:.1f} minutes
   
-Buffett Criteria Results:
+Criteria Applied (sector-aware):
+  1. PEG < 2.0
+  2. P/B < (ROE% × 0.5)
+  3. D/E < 0.5  [banks: ROA > 1%]
+  4. Current ratio 1.5–2.5
+  5. ROE > 10%  [banks: 8%, tech: 15%]
+  6. Interest coverage > 5×  [REITs/Utilities: exempt]
+  Min. passing score: 5/6
+
+Results:
   6/6 (perfect):   {len(df[df['buffett_score']==6]):>4} stocks
   5/6 (excellent): {len(df[df['buffett_score']==5]):>4} stocks
-  4/6 (good):      {len(df[df['buffett_score']==4]):>4} stocks
-  3/6 or less:     {len(df[df['buffett_score']<=3]):>4} stocks
+  4/6 or less:     {len(df[df['buffett_score']<=4]):>4} stocks
   
 Next Steps:
 1. Review the exported CSV files

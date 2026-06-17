@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { runSimulation, listOllamaModels } from "../api/client";
+import { useSearchParams } from "react-router-dom";
+import { runSimulation, runPortfolioSimulation, listOllamaModels } from "../api/client";
 import {
   ResponsiveContainer,
   LineChart,
@@ -11,7 +12,6 @@ import {
   ReferenceLine,
   Legend,
   Area,
-  AreaChart,
   ComposedChart,
 } from "recharts";
 
@@ -51,6 +51,16 @@ interface MonteCarlo {
   error?: string;
 }
 
+interface TickerContrib {
+  ticker: string;
+  weight_pct: number;
+  allocated: number;
+  final_value: number;
+  pnl_pct: number;
+  num_trades: number;
+  win_rate: number;
+}
+
 interface SimResult {
   pnl: number;
   pnl_pct: number;
@@ -72,23 +82,46 @@ interface SimResult {
   monte_carlo?: MonteCarlo;
   walk_forward?: WalkForward;
   stress_tests?: StressPeriod[];
+  per_ticker?: TickerContrib[];
 }
+
+interface Holding {
+  ticker: string;
+  weight: string; // kept as string for the input
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
+const OLLAMA_LOCAL_MODELS = ["qwen3.5:9b"];
+const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
+
+const DEFAULT_PORTFOLIO: Holding[] = [
+  { ticker: "DHI",  weight: "5" },
+  { ticker: "ALL",  weight: "5" },
+  { ticker: "VRTX", weight: "5" },
+  { ticker: "REGN", weight: "5" },
+  { ticker: "NEM",  weight: "5" },
+  { ticker: "AMAT", weight: "5" },
+  { ticker: "LRCX", weight: "5" },
+  { ticker: "FSLR", weight: "5" },
+  { ticker: "VEEV", weight: "5" },
+  { ticker: "HIG",  weight: "5" },
+  { ticker: "CB",   weight: "5" },
+  { ticker: "SPGI", weight: "5" },
+  { ticker: "BSX",  weight: "5" },
+  { ticker: "GILD", weight: "5" },
+  { ticker: "SYK",  weight: "5" },
+  { ticker: "EOG",  weight: "5" },
+  { ticker: "COP",  weight: "5" },
+  { ticker: "GD",   weight: "5" },
+  { ticker: "FCX",  weight: "2.8" },
+  { ticker: "CF",   weight: "2.2" },
+];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
-
-function StatCard({
-  label,
-  value,
-  color,
-  hint,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-  hint?: string;
-}) {
+function StatCard({ label, value, color, hint }: { label: string; value: string; color?: string; hint?: string }) {
   return (
     <div className="bg-white rounded-xl shadow p-4" title={hint}>
       <p className="text-xs text-gray-500 uppercase tracking-wide">{label}</p>
@@ -105,40 +138,56 @@ function fmt(v: number | null | undefined, dec = 2, suffix = ""): string {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Simulation() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mode, setMode] = useState<"single" | "portfolio">("single");
   const [form, setForm] = useState({
-    strategy_description: "",
-    symbol: "AAPL",
+    strategy_description: searchParams.get("strategy") || "",
+    symbol: searchParams.get("symbol") || "AAPL",
     benchmark_symbol: "SPY",
-    start_date: "2020-01-01",
-    end_date: "2024-01-01",
-    initial_capital: "10000",
+    start_date: searchParams.get("start_date") || "2020-01-01",
+    end_date: searchParams.get("end_date") || "2024-01-01",
+    initial_capital: searchParams.get("initial_capital") || "10000",
     monte_carlo_sims: "300",
     run_monte_carlo: true,
     run_walk_forward: true,
     run_stress_tests: true,
   });
-  const [provider, setProvider] = useState<"bedrock" | "ollama">("bedrock");
+  const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_PORTFOLIO);
+  const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
   const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
-  const [ollamaModels, setOllamaModels] = useState<string[]>(["qwen2.5:9b"]);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
   const [result, setResult] = useState<SimResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"equity" | "mc" | "wf" | "stress" | "rules">("equity");
+  const [activeTab, setActiveTab] = useState<"equity" | "holdings" | "mc" | "wf" | "stress" | "rules">("equity");
 
   useEffect(() => {
     listOllamaModels()
       .then((d: { models: string[]; available: boolean }) => {
         setOllamaAvailable(d.available);
-        if (d.models.length > 0) setOllamaModels(d.models);
       })
       .catch(() => {});
+    if (searchParams.toString()) setSearchParams({}, { replace: true });
   }, []);
 
-  const handleProviderChange = (p: "bedrock" | "ollama") => {
+  const handleProviderChange = (p: "bedrock" | "ollama" | "ollama-cloud") => {
     setProvider(p);
-    setModel(p === "bedrock" ? BEDROCK_MODELS[0] : ollamaModels[0] || "qwen2.5:9b");
+    if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
+    else setModel(OLLAMA_LOCAL_MODELS[0]);
   };
+
+  const modelOptions =
+    provider === "bedrock" ? BEDROCK_MODELS :
+    provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
+    OLLAMA_LOCAL_MODELS;
+
+  // Holdings table helpers
+  const updateHolding = (i: number, field: keyof Holding, value: string) =>
+    setHoldings((prev) => prev.map((h, idx) => idx === i ? { ...h, [field]: value } : h));
+  const addHolding = () => setHoldings((prev) => [...prev, { ticker: "", weight: "5" }]);
+  const removeHolding = (i: number) => setHoldings((prev) => prev.filter((_, idx) => idx !== i));
+  const totalWeight = holdings.reduce((s, h) => s + (parseFloat(h.weight) || 0), 0);
 
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,9 +195,9 @@ export default function Simulation() {
     setResult(null);
     setLoading(true);
     try {
-      const res = await runSimulation({
+      let res: SimResult;
+      const common = {
         strategy_description: form.strategy_description,
-        symbol: form.symbol,
         benchmark_symbol: form.benchmark_symbol,
         start_date: form.start_date,
         end_date: form.end_date,
@@ -159,9 +208,19 @@ export default function Simulation() {
         run_stress_tests: form.run_stress_tests,
         provider,
         model: model || undefined,
-      });
+      };
+      if (mode === "portfolio") {
+        const validHoldings = holdings.filter((h) => h.ticker.trim() && parseFloat(h.weight) > 0);
+        if (validHoldings.length === 0) throw new Error("Add at least one holding with a positive weight");
+        res = await runPortfolioSimulation({
+          ...common,
+          holdings: validHoldings.map((h) => ({ ticker: h.ticker.trim().toUpperCase(), weight: parseFloat(h.weight) })),
+        });
+      } else {
+        res = await runSimulation({ ...common, symbol: form.symbol });
+      }
       setResult(res);
-      setActiveTab("equity");
+      setActiveTab(res.per_ticker ? "holdings" : "equity");
     } catch (err: any) {
       setError(err.response?.data?.detail ?? err.message);
     } finally {
@@ -169,46 +228,145 @@ export default function Simulation() {
     }
   };
 
-  const modelOptions = provider === "bedrock" ? BEDROCK_MODELS : ollamaModels;
-
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Strategy Simulation</h1>
 
       {/* ── Form ── */}
       <form onSubmit={handleRun} className="bg-white rounded-xl shadow p-5 mb-6 space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="sm:col-span-2 flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Strategy Description</label>
-            <textarea
-              className="border rounded px-3 py-2 text-sm h-20 resize-none"
-              placeholder="e.g. Buy when price drops 3% from previous day's close, sell when up 8% or after 10 trading days"
-              value={form.strategy_description}
-              onChange={(e) => setForm({ ...form, strategy_description: e.target.value })}
-              required
-            />
-          </div>
 
-          {[
-            ["Symbol", "symbol"],
-            ["Benchmark", "benchmark_symbol"],
-            ["Start Date", "start_date", "date"],
-            ["End Date", "end_date", "date"],
-            ["Initial Capital ($)", "initial_capital", "number"],
-            ["Monte Carlo Sims", "monte_carlo_sims", "number"],
-          ].map(([label, key, type]) => (
-            <div key={key} className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-gray-500">{label}</label>
-              <input
-                type={type || "text"}
-                className="border rounded px-3 py-2 text-sm"
-                value={(form as any)[key]}
-                onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-                required
-              />
-            </div>
-          ))}
+        {/* Mode toggle */}
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium text-gray-500">Mode:</span>
+          <div className="flex rounded border overflow-hidden">
+            {(["single", "portfolio"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => { setMode(m); setResult(null); }}
+                className={`px-4 py-1 text-xs font-medium ${mode === m ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
+              >
+                {m === "single" ? "Single Ticker" : "Portfolio"}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {/* Strategy description */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-gray-500">Strategy Description</label>
+          <textarea
+            className="border rounded px-3 py-2 text-sm h-20 resize-none"
+            placeholder="e.g. Buy when RSI-14 drops below 30, sell when it rises above 70 or after 20 trading days"
+            value={form.strategy_description}
+            onChange={(e) => setForm({ ...form, strategy_description: e.target.value })}
+            required
+          />
+        </div>
+
+        {/* Single ticker inputs */}
+        {mode === "single" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {([
+              ["Symbol", "symbol"],
+              ["Benchmark", "benchmark_symbol"],
+              ["Start Date", "start_date", "date"],
+              ["End Date", "end_date", "date"],
+              ["Initial Capital ($)", "initial_capital", "number"],
+              ["Monte Carlo Sims", "monte_carlo_sims", "number"],
+            ] as [string, string, string?][]).map(([label, key, type]) => (
+              <div key={key} className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-gray-500">{label}</label>
+                <input
+                  type={type || "text"}
+                  className="border rounded px-3 py-2 text-sm"
+                  value={(form as any)[key]}
+                  onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                  required
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Portfolio inputs */}
+        {mode === "portfolio" && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {([
+                ["Benchmark", "benchmark_symbol"],
+                ["Start Date", "start_date", "date"],
+                ["End Date", "end_date", "date"],
+                ["Initial Capital ($)", "initial_capital", "number"],
+                ["Monte Carlo Sims", "monte_carlo_sims", "number"],
+              ] as [string, string, string?][]).map(([label, key, type]) => (
+                <div key={key} className="flex flex-col gap-1">
+                  <label className="text-xs font-medium text-gray-500">{label}</label>
+                  <input
+                    type={type || "text"}
+                    className="border rounded px-3 py-2 text-sm"
+                    value={(form as any)[key]}
+                    onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                    required
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Holdings table */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-medium text-gray-500">
+                  Holdings ({holdings.length} tickers, total weight:{" "}
+                  <span className={Math.abs(totalWeight - 100) > 0.5 ? "text-amber-600 font-semibold" : "text-green-600 font-semibold"}>
+                    {totalWeight.toFixed(1)}%
+                  </span>
+                  {Math.abs(totalWeight - 100) > 0.5 && " — weights auto-normalised on run"}
+                  )
+                </label>
+                <button
+                  type="button"
+                  onClick={addHolding}
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  + Add row
+                </button>
+              </div>
+              <div className="border rounded overflow-hidden">
+                <div className="grid grid-cols-[1fr_80px_28px] text-xs font-medium text-gray-400 bg-gray-50 px-3 py-1.5 border-b">
+                  <span>Ticker</span><span>Weight %</span><span></span>
+                </div>
+                <div className="divide-y max-h-64 overflow-y-auto">
+                  {holdings.map((h, i) => (
+                    <div key={i} className="grid grid-cols-[1fr_80px_28px] items-center px-3 py-1">
+                      <input
+                        className="text-xs border-0 outline-none bg-transparent uppercase font-mono"
+                        value={h.ticker}
+                        onChange={(e) => updateHolding(i, "ticker", e.target.value.toUpperCase())}
+                        placeholder="AAPL"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        className="text-xs border-0 outline-none bg-transparent w-full"
+                        value={h.weight}
+                        onChange={(e) => updateHolding(i, "weight", e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeHolding(i)}
+                        className="text-gray-300 hover:text-red-400 text-sm leading-none"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Options row */}
         <div className="flex flex-wrap gap-5 text-sm items-center border-t pt-3">
@@ -231,16 +389,16 @@ export default function Simulation() {
 
           <span className="text-xs text-gray-500">LLM:</span>
           <div className="flex rounded border overflow-hidden">
-            {(["bedrock", "ollama"] as const).map((p) => (
+            {(["bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => handleProviderChange(p)}
-                className={`px-3 py-1 text-xs font-medium ${
-                  provider === p ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-                }`}
+                className={`px-3 py-1 text-xs font-medium ${provider === p ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
               >
-                {p === "bedrock" ? "Bedrock" : `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
+                {p === "bedrock" ? "Bedrock" :
+                 p === "ollama-cloud" ? "Ollama Cloud" :
+                 `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
               </button>
             ))}
           </div>
@@ -258,7 +416,9 @@ export default function Simulation() {
           disabled={loading}
           className="bg-blue-600 text-white rounded px-6 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
-          {loading ? "Running…" : "Run Simulation"}
+          {loading
+            ? (mode === "portfolio" ? `Running ${holdings.filter(h => h.ticker).length} tickers…` : "Running…")
+            : "Run Simulation"}
         </button>
       </form>
 
@@ -284,23 +444,20 @@ export default function Simulation() {
 
           {/* ── Tabs ── */}
           <div className="flex gap-1 mb-4 text-sm flex-wrap">
-            {(
-              [
-                ["equity", "Equity Curve"],
-                result.monte_carlo && !result.monte_carlo.error ? ["mc", "Monte Carlo"] : null,
-                result.walk_forward && !result.walk_forward.error ? ["wf", "Walk-Forward"] : null,
-                result.stress_tests?.length ? ["stress", "Stress Tests"] : null,
-                ["rules", "Parsed Rules"],
-              ] as ([string, string] | null)[]
-            )
+            {([
+              ["equity", "Equity Curve"],
+              result.per_ticker?.length ? ["holdings", "Holdings"] : null,
+              result.monte_carlo && !result.monte_carlo.error ? ["mc", "Monte Carlo"] : null,
+              result.walk_forward && !result.walk_forward.error ? ["wf", "Walk-Forward"] : null,
+              result.stress_tests?.length ? ["stress", "Stress Tests"] : null,
+              ["rules", "Parsed Rules"],
+            ] as ([string, string] | null)[])
               .filter(Boolean)
               .map(([key, label]) => (
                 <button
                   key={key}
                   onClick={() => setActiveTab(key as any)}
-                  className={`px-3 py-1.5 rounded text-sm font-medium ${
-                    activeTab === key ? "bg-blue-600 text-white" : "bg-white border text-gray-600 hover:bg-gray-50"
-                  }`}
+                  className={`px-3 py-1.5 rounded text-sm font-medium ${activeTab === key ? "bg-blue-600 text-white" : "bg-white border text-gray-600 hover:bg-gray-50"}`}
                 >
                   {label}
                 </button>
@@ -324,6 +481,46 @@ export default function Simulation() {
             </div>
           )}
 
+          {/* ── Holdings Contribution tab ── */}
+          {activeTab === "holdings" && result.per_ticker && (
+            <div className="bg-white rounded-xl shadow p-5">
+              <h2 className="text-sm font-medium text-gray-500 mb-3">Per-Ticker Contribution</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b text-gray-400 text-left">
+                      <th className="pb-2 pr-4">Ticker</th>
+                      <th className="pb-2 pr-4 text-right">Weight</th>
+                      <th className="pb-2 pr-4 text-right">Allocated</th>
+                      <th className="pb-2 pr-4 text-right">Final Value</th>
+                      <th className="pb-2 pr-4 text-right">P&L %</th>
+                      <th className="pb-2 pr-4 text-right">Trades</th>
+                      <th className="pb-2 text-right">Win Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {result.per_ticker
+                      .slice()
+                      .sort((a, b) => b.pnl_pct - a.pnl_pct)
+                      .map((t) => (
+                        <tr key={t.ticker} className="hover:bg-gray-50">
+                          <td className="py-1.5 pr-4 font-mono font-semibold text-gray-800">{t.ticker}</td>
+                          <td className="py-1.5 pr-4 text-right text-gray-500">{t.weight_pct}%</td>
+                          <td className="py-1.5 pr-4 text-right text-gray-500">${t.allocated.toLocaleString()}</td>
+                          <td className="py-1.5 pr-4 text-right text-gray-700">${t.final_value.toLocaleString()}</td>
+                          <td className={`py-1.5 pr-4 text-right font-semibold ${t.pnl_pct >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {t.pnl_pct >= 0 ? "+" : ""}{t.pnl_pct.toFixed(2)}%
+                          </td>
+                          <td className="py-1.5 pr-4 text-right text-gray-500">{t.num_trades}</td>
+                          <td className="py-1.5 text-right text-gray-500">{(t.win_rate * 100).toFixed(0)}%</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* ── Monte Carlo tab ── */}
           {activeTab === "mc" && result.monte_carlo && !result.monte_carlo.error && (
             <div className="bg-white rounded-xl shadow p-5 space-y-4">
@@ -335,8 +532,6 @@ export default function Simulation() {
                   {result.monte_carlo.prob_profit_pct}% probability of profit
                 </span>
               </div>
-
-              {/* Percentile summary */}
               <div className="grid grid-cols-5 gap-2 text-center text-xs">
                 {[
                   ["P5 (Bear)", result.monte_carlo.p5_final, "text-red-600"],
@@ -351,8 +546,6 @@ export default function Simulation() {
                   </div>
                 ))}
               </div>
-
-              {/* Fan chart */}
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={result.monte_carlo.fan_curve}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
@@ -376,9 +569,7 @@ export default function Simulation() {
               <div className="flex items-center gap-3">
                 <h2 className="text-sm font-medium text-gray-500">Walk-Forward Validation (70/30 split)</h2>
                 {result.walk_forward.overfit_warning && (
-                  <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">
-                    Overfit warning
-                  </span>
+                  <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-medium">Overfit warning</span>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-4 text-sm">
@@ -396,7 +587,7 @@ export default function Simulation() {
               </div>
               <p className="text-xs text-gray-400">
                 {result.walk_forward.overfit_warning
-                  ? "Strategy performs well in-sample but poorly out-of-sample — likely overfitted to the training period. Consider a simpler rule set or wider parameter ranges."
+                  ? "Strategy performs well in-sample but poorly out-of-sample — likely overfitted."
                   : "In-sample and out-of-sample returns are consistent — no strong overfit signal detected."}
               </p>
               <ResponsiveContainer width="100%" height={220}>

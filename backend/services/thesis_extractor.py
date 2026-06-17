@@ -103,10 +103,16 @@ async def extract_and_save(
     """
     import asyncio
 
-    if provider == "ollama":
+    if provider in ("ollama", "ollama-cloud"):
         from backend.services import ollama_client
-        _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
-        extracted = await ollama_client.extract_json(content, EXTRACTION_PROMPT, model=_model)
+        if provider == "ollama-cloud":
+            _model = model or ollama_client.OLLAMA_CLOUD_DEFAULT_MODEL
+            extracted = await ollama_client.extract_json(
+                content, EXTRACTION_PROMPT, model=_model, host=ollama_client.OLLAMA_CLOUD_HOST
+            )
+        else:
+            _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
+            extracted = await ollama_client.extract_json(content, EXTRACTION_PROMPT, model=_model)
     else:
         extracted = await asyncio.to_thread(_call_bedrock, content)
 

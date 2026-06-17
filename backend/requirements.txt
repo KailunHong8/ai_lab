@@ -1,4 +1,6 @@
 fastapi==0.111.0
+structlog>=24.1.0
+langfuse>=2.36.0
 uvicorn[standard]==0.29.0
 sqlalchemy==2.0.30
 aiosqlite==0.20.0
