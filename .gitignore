@@ -3,3 +3,7 @@ chroma_principles/**/*.bin
 chroma_principles/**/*.sqlite3
 chroma_principles/**/*.sqlite3-shm
 chroma_principles/**/*.sqlite3-wal
+
+# Python bytecode cache
+__pycache__/
+*.pyc
