@@ -7,3 +7,7 @@ chroma_principles/**/*.sqlite3-wal
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Local environment secrets
+.env
+.env.*
