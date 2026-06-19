@@ -1,91 +1,178 @@
-# Product Note — Quant Agentic Trading System
+# Product Note - Quant Agentic Trading System
 
-An AI-powered paper-trading research platform. Not a real-money system. Powered by AWS Bedrock (Claude Sonnet 4.6) with Ollama as a local fallback.
+An AI-powered paper-trading research platform. Not a real-money system. Primary AI runtime is AWS Bedrock (Claude Sonnet), with Ollama and Ollama Cloud options in the UI.
 
----
-
-## Core Features
-
-### Market Data
-- Real-time quotes, company profiles, symbol search, and EOD historical prices via FMP free tier (`/stable/` endpoints).
-- Yahoo Finance as automatic fallback when FMP returns 402/403/404.
-- FMP API key: configured via `FMP_API_KEY` env var (free tier: ~250 req/day).
-
-### Portfolio (paper trading)
-- Cash deposit / withdrawal (guards against overdraft).
-- Buy/sell shares with real-time prices (guards against buying more than cash, selling more than held).
-- Holdings with P&L, portfolio summary (total value, return %), full transaction history.
-
-### AI Trading Copilot
-- Agentic loop: grounded in investing principles (Brealey-Myers, Shiller, Poor Charlie's Almanack) via semantic search, layered with user-uploaded research (ARK etc.).
-- Tools: `get_quote`, `get_portfolio`, `search_theses`, `get_entity_graph`, `search_principles`.
-- **Provider toggle**: Bedrock (Claude Sonnet 4.6) or Ollama (local, e.g. qwen2.5:9b) selectable per session from the UI.
-- Model selector in the UI dropdown for both providers.
-
-### Research Library
-- Upload PDFs, text, markdown, or Gmail `.mbox` exports.
-- LLM extracts structured investment theses (entity, stance, claims, type) and entity relationships (supplier/customer/competitor graph).
-- **Provider toggle on upload**: choose Bedrock or Ollama for thesis extraction.
-- SHA256 dedup prevents duplicate imports; mbox imports split individual emails.
-- Semantic search over documents via `POST /api/knowledge/search`.
-- Force re-index: `POST /api/knowledge/reindex`.
-
-### Value Screener
-- Screen any comma-separated watchlist against 6 Buffett/Brealey/Shiller/Munger criteria.
-- **Data source**: FMP `/stable/ratios` + profile first, yfinance fallback.
-- Criteria: D/E ≤ 0.5, Current Ratio ≥ 1.5, P/B ≤ 2.0, ROE ≥ 10%, ROA ≥ 5%, Interest Coverage ≥ 4×.
-- Passing stocks enriched with ARK research theses from the knowledge base + principles snippet.
-- Configurable minimum criteria threshold (default ≥ 4/6).
-
-### Strategy Simulation (institutional-grade)
-- Natural-language strategy description → LLM parses into executable rules.
-- **Provider toggle**: Bedrock or Ollama for strategy parsing.
-- Rule-based backtester (buy-on-dip, sell-on-gain/stop-loss/hold-days).
-- **Institutional risk metrics**: Sharpe, Sortino, Calmar, annualised return, max drawdown, avg drawdown, beta vs benchmark, Jensen's alpha, 60-day momentum flag.
-- **Monte Carlo simulation**: bootstrap resampling of daily returns, percentile fan chart (P5/P25/P50/P75/P95), probability of profit.
-- **Walk-forward validation**: 70/30 in-sample / out-of-sample split with overfit warning.
-- **Stress test overlays**: 2008 GFC, 2020 COVID crash, 2022 rate shock — runs the strategy over each period separately.
-- Benchmark comparison: configurable (default SPY).
-
-### Principles Library (semantic search)
-- Investing books in `investing_research/` indexed via chromadb + sentence-transformers (all-MiniLM-L6-v2).
-- Keyword fallback if chromadb is unavailable.
-- Add a new book by dropping any PDF/MD/TXT into `investing_research/` and calling `POST /api/knowledge/reindex`.
+Date: 2026-06-19
 
 ---
 
-## Known Constraints & Self-Critique
+## 1) Product Positioning
 
-### Data limitations
-- FMP free tier: ~250 req/day, no options/futures, limited international coverage.
-- EOD data only — intraday/HFT strategies are not feasible and not supported.
-- Fundamental ratios from FMP may lag 1 quarter (TTM).
+Quant combines:
 
-### Analytics gaps (not yet implemented)
-- **Factor decomposition**: true Fama-French 3/5-factor regression requires the FF factor data files (freely available from Ken French's website). Currently approximated via beta/alpha only.
-- **Barra-style risk model**: requires covariance matrix from a factor library — out of scope for free-tier data.
-- **Walk-forward over rolling windows**: currently a single 70/30 split; multi-window rolling WFO would require ≥3 years of data per symbol.
-- **Correlation / portfolio-level simulation**: all simulations are single-asset; multi-asset portfolio optimisation (Markowitz efficient frontier) is not yet implemented.
-- **Transaction costs / slippage**: backtester assumes zero transaction cost and perfect fill at close — results will overstate real-world performance.
-- **Survivorship bias**: screener uses the user's provided watchlist; there is no guard against screener lists that exclude delisted stocks.
-- **vectorbt integration**: deferred — the pure-Python backtester covers the current use case; vectorbt would add vectorised multi-strategy sweeps if needed.
+1. Paper-trading portfolio operations
+2. Market/fundamental data retrieval
+3. AI-assisted research synthesis
+4. Strategy simulation and risk analytics
+5. User-curated knowledge base (documents + extracted theses)
 
-### AI / LLM limitations
-- Strategy parser is only as good as the model and the prompt; complex conditional strategies (e.g. "buy when RSI < 30 AND volume spike") may not parse correctly.
-- Ollama tool-use quality varies by model; qwen2.5:9b is the tested baseline.
-- Thesis extraction truncates documents to 12k characters — long reports lose tail content.
+The goal is decision support, not auto-execution.
 
 ---
 
-## Technology Stack
+## 2) Current Implementation Snapshot
+
+### Market and portfolio
+
+1. Real-time quote/profile/search/history with FMP-first and Yahoo fallback.
+2. Paper-trading flows (deposit/withdraw/buy/sell) with server-side guards.
+3. Holdings and portfolio summary with live mark-to-market.
+
+### AI copilot
+
+1. Multi-agent routing in chat:
+	- advice mode (tool-equipped)
+	- research mode (Perplexity-backed)
+	- auto mode (orchestrator classifies intent)
+2. Provider/model controls in UI for Bedrock, Ollama local, and Ollama Cloud.
+3. Tool access includes quote, portfolio, screener history, thesis search, entity graph, principles search, and ARK raw-text search.
+
+### Research library and extraction
+
+1. Manual ingestion via file upload or paste text.
+2. mbox ingestion support for newsletter/email imports.
+3. SHA256 deduplication and document archive in DB + markdown files.
+4. Post-ingest structured extraction:
+	- theses (entity/theme/stance/claims/type)
+	- entity relationships (supplier/customer/competitor-like edges)
+5. Extraction provider/model can be selected (Bedrock/Ollama/Ollama Cloud).
+
+### Retrieval/indexing
+
+1. Principles retrieval:
+	- corpus in `investing_research/`
+	- semantic + keyword hybrid fusion
+2. ARK raw-text retrieval:
+	- separate corpus and index path
+	- semantic with keyword fallback
+3. Knowledge search endpoints currently reflect this split (`search` for principles, `search-ark` for ARK corpus).
+
+### Screener and simulation
+
+1. Value screener with six Buffett/Brealey/Shiller/Munger criteria.
+2. Screener run history persisted for future agent context.
+3. Backtesting and analytics include Sharpe/Sortino/Calmar, drawdown, alpha/beta, Monte Carlo, walk-forward split, and stress windows.
+
+---
+
+## 3) Current Constraints
+
+1. ARK naming and ARK-specific service paths make multi-fund extension less clean.
+2. Perplexity outputs are available for live chat but not yet persisted as first-class knowledge documents.
+3. Principles and market-opinion metadata are not fully separated in DB schema.
+4. Existing DB lifecycle uses `create_all`; schema evolution requires explicit migration scripts.
+
+---
+
+## 4) Target Design (Planned)
+
+### Core design principle
+
+Adopt a two-lane knowledge architecture:
+
+1. Principles lane (manual-only, evergreen)
+2. Market-opinion lane (fund letters + optional Perplexity sentiment/context, time-sensitive)
+
+### Source expansion
+
+Support multiple fund opinion sources without source-specific branching:
+
+1. ARK
+2. GMO
+3. Sequoia
+4. Bridgewater
+5. Additional funds over time
+
+### Perplexity role
+
+Perplexity is used as a controlled market-context layer:
+
+1. Optional persistence of research outputs
+2. Citation/provenance stored
+3. TTL on time-sensitive entries to avoid stale sentiment contamination
+
+### Retrieval policy
+
+Agent reasoning should follow hierarchy:
+
+1. Principles first (framework)
+2. Fund opinions second (manager theses)
+3. Web sentiment/context third (time-sensitive)
+
+Responses should always surface source + date and distinguish fact vs forecast/opinion.
+
+---
+
+## 5) Product Workflow Decision
+
+Recommended operating model: hybrid.
+
+1. Keep fund-letter ingestion manual for quality control and conviction building.
+2. Add Perplexity persistence for timely sentiment and macro context.
+3. Keep principles manual-only.
+4. Periodically prune stale market-context entries via TTL cleanup.
+
+This balances high signal quality with faster market awareness.
+
+---
+
+## 6) Build Direction
+
+1. Generalize ARK-specific naming in services/tools/endpoints to source-agnostic market-opinion naming.
+2. Add taxonomy metadata to documents/theses:
+	- corpus
+	- source_type
+	- fund
+	- recency/expiration
+	- reliability tier
+3. Add Perplexity ingest endpoint and indexing path.
+4. Implement using one market-opinion vector collection with metadata filters.
+5. Perplexity ingestion is manually triggered in the first implementation; scheduling is optional later.
+
+Detailed implementation context is tracked in `research_workflow_change_spec.md`.
+
+---
+
+## 7) Known Constraints and Risks
+
+### Data and infra
+
+1. FMP free-tier request limits and coverage constraints remain.
+2. EOD data only (no intraday strategy support).
+3. Some fundamentals can be sparse or lagged depending on fallback source.
+
+### AI and extraction
+
+1. Extraction quality depends on provider/model and prompt alignment.
+2. Very long documents may be truncated during extraction.
+3. Over-automation risk: stale sentiment can degrade answer quality if TTL and provenance are not enforced.
+
+### Quant analytics scope
+
+1. Full factor decomposition and portfolio-optimization stacks are still out of current scope.
+2. Transaction-cost and slippage realism remains simplified in backtests.
+
+---
+
+## 8) Technology Stack
 
 | Layer | Technology |
 |---|---|
 | Backend | FastAPI, SQLAlchemy async, Pydantic |
-| AI (primary) | AWS Bedrock — Claude Sonnet 4.6 |
-| AI (fallback) | Ollama — qwen2.5:9b (local) |
+| AI (primary) | AWS Bedrock |
+| AI (additional) | Ollama local, Ollama Cloud |
+| Research web specialist | Perplexity via OpenAI-compatible endpoint |
 | Database | SQLite + aiosqlite |
-| Semantic search | chromadb + sentence-transformers (all-MiniLM-L6-v2) |
-| Market data | FMP `/stable/` + yfinance fallback |
+| Semantic retrieval | chromadb + sentence-transformers (all-MiniLM-L6-v2) |
+| Market data | FMP stable endpoints + yfinance fallback |
 | Frontend | React, TypeScript, Vite, Recharts |
-| Screener data store | yfinance (from-memory, no ArcticDB dependency in the app) |

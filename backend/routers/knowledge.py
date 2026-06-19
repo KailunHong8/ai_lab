@@ -222,10 +222,17 @@ async def get_entity(symbol: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/search")
-async def search_docs(q: str, limit: int = 4):
-    """Semantic search over the principles library (chromadb), falls back to keyword."""
+async def search_docs(q: str, limit: int = 8):
+    """Hybrid (semantic + keyword, RRF-fused) search over the principles library."""
     from backend.services.research import search_principles
     return search_principles(q, top_k=limit)
+
+
+@router.get("/search-ark")
+async def search_ark_docs(q: str, limit: int = 8):
+    """Semantic search over the ARK newsletter collection (chromadb), falls back to keyword."""
+    from backend.services.ark_research import search_ark
+    return search_ark(q, top_k=limit)
 
 
 @router.post("/reindex")

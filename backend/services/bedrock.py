@@ -249,7 +249,7 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
 
     if name == "search_principles":
         from backend.services.research import search_principles
-        results = search_principles(tool_input.get("query", ""), top_k=4)
+        results = search_principles(tool_input.get("query", ""), top_k=8)
         return json.dumps(results)
 
     if name == "search_ark_newsletter":

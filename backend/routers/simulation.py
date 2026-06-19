@@ -83,12 +83,36 @@ async def _parse_strategy(description: str, provider: str, model: Optional[str])
         return json.loads(text[start:end])
 
 
+# ── Transaction cost model ─────────────────────────────────────────────────────
+# Fixed-bps slippage applied as a price haircut on BOTH legs, plus a bps commission
+# charged on each fill's notional. This is the standard daily-bar, fill-at-close
+# approach (Zipline / Backtrader / vectorbt). We deliberately avoid square-root
+# market-impact / Almgren-Chriss models: those are intraday execution-scheduling
+# models and are unidentifiable at daily-close granularity.
+#
+# Defaults are sensible for US large-caps. Raise slippage for smaller / illiquid
+# names (≈10 bps mid-cap, 20–50 bps small-cap).
+DEFAULT_COMMISSION_BPS = 2.0   # institutional all-in; set 0.0 for commission-free retail
+DEFAULT_SLIPPAGE_BPS   = 5.0   # US large-cap one-way; raise for smaller names
+
+
 # ── Core backtest engine ──────────────────────────────────────────────────────
 
-def _run_backtest(candles: list[dict], rules: dict, initial_capital: float) -> dict:
+def _run_backtest(
+    candles: list[dict],
+    rules: dict,
+    initial_capital: float,
+    commission_bps: float = DEFAULT_COMMISSION_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+) -> dict:
     """
     Rule-based replay. Returns equity curve, trades, and raw return series.
     candles sorted oldest-first: [{"date", "open", "high", "low", "close"}, ...]
+
+    Transaction costs: slippage moves the fill price against us on each leg
+    (buy higher, sell lower); commission is a bps charge on notional, subtracted
+    from cash on every fill. Positions are marked-to-market at the raw close —
+    costs are realised only at trade time.
     """
     cash = initial_capital
     shares = 0.0
@@ -103,6 +127,10 @@ def _run_backtest(candles: list[dict], rules: dict, initial_capital: float) -> d
     stop_loss_pct = rules.get("stop_loss_pct")
     hold_days     = rules.get("hold_days")
 
+    slip = slippage_bps / 10000.0
+    comm = commission_bps / 10000.0
+
+    total_costs = 0.0
     prev_portfolio = initial_capital
 
     for i, candle in enumerate(candles):
@@ -112,11 +140,16 @@ def _run_backtest(candles: list[dict], rules: dict, initial_capital: float) -> d
         if shares == 0 and buy_pct_drop is not None:
             drop = (prev_close - close) / prev_close * 100
             if drop >= buy_pct_drop and cash > 0:
-                shares    = cash / close
-                buy_price = close
-                buy_day   = i
-                cash      = 0.0
-                trades.append({"date": candle["date"], "action": "BUY", "price": close})
+                fill_price = close * (1 + slip)            # pay more on entry
+                # Reserve for commission so cash never goes negative
+                shares     = cash / (fill_price * (1 + comm))
+                gross      = shares * fill_price
+                commission = gross * comm
+                cash       = cash - gross - commission
+                buy_price  = fill_price
+                buy_day    = i
+                total_costs += commission + shares * (fill_price - close)
+                trades.append({"date": candle["date"], "action": "BUY", "price": round(fill_price, 4)})
 
         elif shares > 0:
             gain = (close - buy_price) / buy_price * 100
@@ -128,9 +161,13 @@ def _run_backtest(candles: list[dict], rules: dict, initial_capital: float) -> d
                 or (hold_days is not None and days_held >= hold_days)
             )
             if should_sell:
-                cash   = shares * close
-                shares = 0.0
-                trades.append({"date": candle["date"], "action": "SELL", "price": close})
+                fill_price = close * (1 - slip)            # receive less on exit
+                gross      = shares * fill_price
+                commission = gross * comm
+                cash       = cash + gross - commission
+                total_costs += commission + shares * (close - fill_price)
+                shares     = 0.0
+                trades.append({"date": candle["date"], "action": "SELL", "price": round(fill_price, 4)})
 
         portfolio_value = cash + shares * close
         equity_curve.append({"date": candle["date"], "value": round(portfolio_value, 2)})
@@ -140,10 +177,21 @@ def _run_backtest(candles: list[dict], rules: dict, initial_capital: float) -> d
         prev_portfolio = portfolio_value
 
     if shares > 0 and candles:
-        cash   = shares * float(candles[-1]["close"])
+        close      = float(candles[-1]["close"])
+        fill_price = close * (1 - slip)
+        gross      = shares * fill_price
+        commission = gross * comm
+        cash       = cash + gross - commission
+        total_costs += commission + shares * (close - fill_price)
         shares = 0.0
 
-    return {"equity_curve": equity_curve, "trades": trades, "daily_returns": daily_returns, "final_value": cash}
+    return {
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "daily_returns": daily_returns,
+        "final_value": cash,
+        "total_costs": round(total_costs, 2),
+    }
 
 
 # ── Institutional risk / performance metrics ──────────────────────────────────
@@ -326,6 +374,8 @@ def _walk_forward(
     rules: dict,
     initial_capital: float,
     in_sample_pct: float = 0.7,
+    commission_bps: float = DEFAULT_COMMISSION_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
 ) -> dict:
     """
     Split candles into in-sample (IS) and out-of-sample (OOS) windows.
@@ -338,8 +388,8 @@ def _walk_forward(
     is_candles  = candles[:split]
     oos_candles = candles[split:]
 
-    is_res  = _run_backtest(is_candles,  rules, initial_capital)
-    oos_res = _run_backtest(oos_candles, rules, initial_capital)
+    is_res  = _run_backtest(is_candles,  rules, initial_capital, commission_bps, slippage_bps)
+    oos_res = _run_backtest(oos_candles, rules, initial_capital, commission_bps, slippage_bps)
 
     def _pnl_pct(res: dict) -> float:
         return round((res["final_value"] - initial_capital) / initial_capital * 100, 2)
@@ -359,9 +409,65 @@ def _walk_forward(
     }
 
 
+def _portfolio_walk_forward(
+    candles_per_ticker: list[list[dict]],
+    tickers: list[str],
+    weights: list[float],
+    rules: dict,
+    initial_capital: float,
+    in_sample_pct: float = 0.7,
+    commission_bps: float = DEFAULT_COMMISSION_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+) -> dict:
+    """
+    Walk-forward on the full blended portfolio (not a single-ticker proxy).
+    Each leg is split into IS/OOS at the same fraction, backtested with its
+    weighted capital slice, then blended into one IS curve and one OOS curve.
+    """
+    # Require every leg to have enough data for a meaningful split
+    min_len = min(len(c) for c in candles_per_ticker) if candles_per_ticker else 0
+    split = int(min_len * in_sample_pct)
+    if split < 20 or (min_len - split) < 10:
+        return {"error": "Not enough data for walk-forward split"}
+
+    is_legs:  list[dict] = []
+    oos_legs: list[dict] = []
+    for candles, weight in zip(candles_per_ticker, weights):
+        leg_cap   = initial_capital * weight
+        leg_split = int(len(candles) * in_sample_pct)
+        is_legs.append(_run_backtest(candles[:leg_split], rules, leg_cap, commission_bps, slippage_bps))
+        oos_legs.append(_run_backtest(candles[leg_split:], rules, leg_cap, commission_bps, slippage_bps))
+
+    is_blended  = _align_portfolio(is_legs,  tickers, weights, initial_capital)
+    oos_blended = _align_portfolio(oos_legs, tickers, weights, initial_capital)
+
+    def _pnl_pct(blended: dict) -> float:
+        return round((blended["final_value"] - initial_capital) / initial_capital * 100, 2)
+
+    is_pnl  = _pnl_pct(is_blended)
+    oos_pnl = _pnl_pct(oos_blended)
+    overfit_flag = is_pnl > 5 and oos_pnl < 0
+
+    return {
+        "in_sample_days":      len(is_blended["equity_curve"]),
+        "out_of_sample_days":  len(oos_blended["equity_curve"]),
+        "in_sample_pnl_pct":   is_pnl,
+        "out_of_sample_pnl_pct": oos_pnl,
+        "overfit_warning":     overfit_flag,
+        "in_sample_equity":    is_blended["equity_curve"],
+        "out_of_sample_equity": oos_blended["equity_curve"],
+    }
+
+
 # ── Stress tests ──────────────────────────────────────────────────────────────
 
-async def _stress_tests(symbol: str, rules: dict, initial_capital: float) -> list[dict]:
+async def _stress_tests(
+    symbol: str,
+    rules: dict,
+    initial_capital: float,
+    commission_bps: float = DEFAULT_COMMISSION_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+) -> list[dict]:
     """Run the strategy over known crash/stress periods."""
     results = []
     for key, (start, end, label) in STRESS_PERIODS.items():
@@ -369,7 +475,7 @@ async def _stress_tests(symbol: str, rules: dict, initial_capital: float) -> lis
         if len(candles) < 10:
             results.append({"period": label, "error": "insufficient data"})
             continue
-        res = _run_backtest(candles, rules, initial_capital)
+        res = _run_backtest(candles, rules, initial_capital, commission_bps, slippage_bps)
         pnl_pct = (res["final_value"] - initial_capital) / initial_capital * 100
         ts = _trade_stats(res["trades"])
         results.append({
@@ -450,6 +556,8 @@ async def _portfolio_stress_tests(
     weights: list[float],
     rules: dict,
     initial_capital: float,
+    commission_bps: float = DEFAULT_COMMISSION_BPS,
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
 ) -> list[dict]:
     results = []
     for key, (start, end, label) in STRESS_PERIODS.items():
@@ -461,7 +569,7 @@ async def _portfolio_stress_tests(
                 valid = False
                 break
             leg_cap = initial_capital * weight
-            leg_results.append(_run_backtest(candles, rules, leg_cap))
+            leg_results.append(_run_backtest(candles, rules, leg_cap, commission_bps, slippage_bps))
         if not valid:
             results.append({"period": label, "error": "insufficient data for one or more tickers"})
             continue
@@ -492,6 +600,8 @@ class SimulationRequest(BaseModel):
     run_walk_forward: bool = True
     run_stress_tests: bool = True
     benchmark_symbol: str = "SPY"
+    commission_bps: float = DEFAULT_COMMISSION_BPS
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS
 
 
 class PortfolioHolding(BaseModel):
@@ -512,6 +622,8 @@ class PortfolioSimulationRequest(BaseModel):
     run_walk_forward: bool = True
     run_stress_tests: bool = True
     benchmark_symbol: str = "SPY"
+    commission_bps: float = DEFAULT_COMMISSION_BPS
+    slippage_bps: float = DEFAULT_SLIPPAGE_BPS
 
 
 # ── Main endpoint ─────────────────────────────────────────────────────────────
@@ -539,7 +651,8 @@ async def run_simulation(req: SimulationRequest):
                 for i in range(len(closes))]
 
     bt_result, bm_rets = await asyncio.gather(
-        asyncio.to_thread(_run_backtest, candles, rules, req.initial_capital),
+        asyncio.to_thread(_run_backtest, candles, rules, req.initial_capital,
+                          req.commission_bps, req.slippage_bps),
         _bm_returns(),
     )
 
@@ -560,6 +673,9 @@ async def run_simulation(req: SimulationRequest):
         "trades":        bt_result["trades"],
         "parsed_rules":  rules,
         "benchmark":     req.benchmark_symbol,
+        "total_costs":   bt_result["total_costs"],
+        "commission_bps": req.commission_bps,
+        "slippage_bps":  req.slippage_bps,
     }
 
     # 5. Optional analytics (run in parallel where possible)
@@ -573,10 +689,12 @@ async def run_simulation(req: SimulationRequest):
         )
     if req.run_walk_forward:
         tasks["wf"] = asyncio.to_thread(
-            _walk_forward, candles, rules, req.initial_capital
+            _walk_forward, candles, rules, req.initial_capital, 0.7,
+            req.commission_bps, req.slippage_bps,
         )
     if req.run_stress_tests:
-        tasks["st"] = _stress_tests(req.symbol, rules, req.initial_capital)
+        tasks["st"] = _stress_tests(req.symbol, rules, req.initial_capital,
+                                    req.commission_bps, req.slippage_bps)
 
     if tasks:
         results_gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -631,7 +749,8 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
 
     # 3. Run per-leg backtests in parallel threads
     leg_results = await asyncio.gather(*[
-        asyncio.to_thread(_run_backtest, candles, rules, req.initial_capital * w)
+        asyncio.to_thread(_run_backtest, candles, rules, req.initial_capital * w,
+                          req.commission_bps, req.slippage_bps)
         for candles, w in zip(candles_per_ticker, weights)
     ])
 
@@ -658,6 +777,7 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
         bm_rets or None,
     )
 
+    total_costs = round(sum(lr["total_costs"] for lr in leg_results), 2)
     payload: dict = {
         **met,
         **ts_all,
@@ -666,6 +786,9 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
         "parsed_rules":  rules,
         "benchmark":     req.benchmark_symbol,
         "per_ticker":    blended["per_ticker"],
+        "total_costs":   total_costs,
+        "commission_bps": req.commission_bps,
+        "slippage_bps":  req.slippage_bps,
     }
 
     # 6. Optional analytics on blended curve
@@ -675,12 +798,14 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
             _monte_carlo, blended["daily_returns"], req.initial_capital, req.monte_carlo_sims
         )
     if req.run_walk_forward:
-        # Walk-forward on longest common candle set (first ticker as proxy)
+        # Walk-forward on the full blended portfolio (each leg split, then blended)
         tasks["wf"] = asyncio.to_thread(
-            _walk_forward, candles_per_ticker[0], rules, req.initial_capital * weights[0]
+            _portfolio_walk_forward, candles_per_ticker, tickers, weights, rules,
+            req.initial_capital, 0.7, req.commission_bps, req.slippage_bps,
         )
     if req.run_stress_tests:
-        tasks["st"] = _portfolio_stress_tests(tickers, weights, rules, req.initial_capital)
+        tasks["st"] = _portfolio_stress_tests(tickers, weights, rules, req.initial_capital,
+                                              req.commission_bps, req.slippage_bps)
 
     if tasks:
         results_gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)

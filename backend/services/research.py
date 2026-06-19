@@ -223,21 +223,57 @@ def remove_document_from_principles(doc_id: str) -> None:
         pass
 
 
+# ── hybrid fusion (Reciprocal Rank Fusion) ─────────────────────────────────────
+
+RRF_K = 60          # standard RRF constant (Cormack et al. 2009); rarely needs tuning
+CANDIDATE_K = 25    # over-fetch this many per retriever before fusing
+
+
+def _rrf_fuse(ranked_lists: list[list[dict]], k: int = RRF_K) -> list[dict]:
+    """
+    Reciprocal Rank Fusion: combine ranked result lists using rank position only,
+    so incompatible score scales (cosine similarity vs keyword overlap) never mix.
+    score(d) = Σ 1 / (k + rank_i(d)) across the lists d appears in.
+    """
+    scores: dict[tuple, float] = {}
+    items: dict[tuple, dict] = {}
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked, start=1):
+            key = (item["source"], item["text"])
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            items.setdefault(key, item)
+    fused = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    out = []
+    for key, score in fused:
+        merged = dict(items[key])
+        merged["score"] = round(score, 6)   # RRF fusion score, not raw similarity
+        out.append(merged)
+    return out
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
-def search_principles(query: str, top_k: int = 4) -> list[dict]:
+def search_principles(query: str, top_k: int = 8) -> list[dict]:
     """
     Return top_k chunks most relevant to query.
-    Uses chromadb semantic search when available, falls back to keyword overlap.
+
+    Hybrid retrieval: over-fetch candidates from both the semantic (chromadb) and
+    keyword paths, fuse them with Reciprocal Rank Fusion, then trim to top_k.
+    Dense recovers paraphrase/synonymy; keyword recovers exact terms, tickers, and
+    proper nouns the embedding misses. Falls back to whichever path is available.
     """
+    dense: list[dict] = []
     if _HAS_CHROMA:
         try:
-            results = _semantic_search(query, top_k)
-            if results:
-                return results
+            dense = _semantic_search(query, CANDIDATE_K)
         except Exception:
-            pass
-    return _keyword_search(query, top_k)
+            dense = []
+
+    keyword = _keyword_search(query, CANDIDATE_K)
+
+    if dense and keyword:
+        return _rrf_fuse([dense, keyword])[:top_k]
+    return (dense or keyword)[:top_k]
 
 
 def rebuild_index() -> int:
