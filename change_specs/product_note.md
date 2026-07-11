@@ -139,7 +139,7 @@ This balances high signal quality with faster market awareness.
 4. Implement using one market-opinion vector collection with metadata filters.
 5. Perplexity ingestion is manually triggered in the first implementation; scheduling is optional later.
 
-Detailed implementation context is tracked in `research_workflow_change_spec.md`.
+Detailed implementation context is tracked in change_specs/research_workflow_change_spec.md.
 
 ---
 

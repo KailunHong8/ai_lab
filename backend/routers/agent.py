@@ -98,9 +98,52 @@ async def _advice_reply(
         )
 
 
+async def _research_reply(
+    message: str,
+    history: list[dict],
+    session_id: str,
+    provider: str,
+    model: Optional[str],
+    db: AsyncSession,
+) -> str:
+    """
+    Run a Perplexity research turn and ingest the result into the market_opinion
+    corpus (same path as /ingest-perplexity), so chat research is persisted,
+    thesis-extracted, and indexed. Returns the reply text with a Sources footer.
+    """
+    from backend.services import perplexity_client
+    from backend.routers.knowledge import ingest_research_result
+
+    try:
+        raw = await perplexity_client.research_raw(
+            query=message, history=history, session_id=session_id
+        )
+    except Exception:
+        # Transport failure — fall back to the plain research turn (handles its
+        # own error messaging) and skip ingestion.
+        return await perplexity_client.research(
+            message=message, history=history, session_id=session_id
+        )
+
+    content = raw["content"]
+    if not content.strip():
+        return "Research provider returned an unexpected response."
+
+    # Persist + extract + index; never let an ingestion hiccup block the reply.
+    try:
+        await ingest_research_result(
+            query=message, topic="chat", content=content, citations=raw["citations"],
+            db=db, provider=provider, model=model,
+        )
+    except Exception:
+        pass
+
+    return content + perplexity_client.format_citations_footer(raw["citations"])
+
+
 @router.post("/chat")
 async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
-    from backend.services import orchestrator, perplexity_client
+    from backend.services import orchestrator
 
     # Load session + history from DB
     session = await db.get(ChatSession, req.session_id)
@@ -125,12 +168,12 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
         intent = await orchestrator.classify_intent(req.message)
 
     if intent == "research":
-        reply = await perplexity_client.research(
-            message=req.message, history=history, session_id=req.session_id
+        reply = await _research_reply(
+            req.message, history, req.session_id, req.provider, req.model, db
         )
     elif intent == "both":
-        findings = await perplexity_client.research(
-            message=req.message, history=history, session_id=req.session_id
+        findings = await _research_reply(
+            req.message, history, req.session_id, req.provider, req.model, db
         )
         synthesis_input = orchestrator.build_synthesis_input(req.message, findings)
         reply = await _advice_reply(

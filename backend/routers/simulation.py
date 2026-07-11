@@ -40,6 +40,37 @@ PARSE_SYSTEM = (
     "Return ONLY a JSON object with these fields."
 )
 
+PARSE_DUAL_SYSTEM = (
+    "You are a quantitative strategy parser. "
+    "Given a natural-language or tabular description of a trading strategy, extract:\n\n"
+    "1. holdings: array of portfolio positions from any allocation table. Each entry:\n"
+    "   - ticker: string (uppercase, e.g. AAPL, BRK.B)\n"
+    "   - allocation_pct: float (percentage, e.g. 14.0 for 14%)\n"
+    "   - sector: string | null\n"
+    "   - tier: string | null\n"
+    "   - rationale: string | null\n"
+    "   Return [] if no allocation table is present.\n\n"
+    "2. trading_rules: object with:\n"
+    "   - buy_condition: string | null\n"
+    "   - sell_condition: string | null\n"
+    "   - buy_pct_drop: float | null — % drop from previous close that triggers a buy (positive)\n"
+    "   - sell_pct_gain: float | null — % gain from buy price that triggers a sell\n"
+    "   - stop_loss_pct: float | null — % loss from buy price for stop-loss\n"
+    "   - hold_days: int | null — max holding period in trading days\n"
+    "   Return all null if no explicit trading rules are present.\n\n"
+    'Return ONLY valid JSON: {"holdings": [...], "trading_rules": {...}}'
+)
+
+# Default rules for allocation-only strategies: buy on first available day, hold until end
+DEFAULT_ALLOCATION_RUN_RULES: dict = {
+    "buy_condition": "Buy and hold from start date",
+    "sell_condition": None,
+    "buy_pct_drop": 0.0,
+    "sell_pct_gain": None,
+    "stop_loss_pct": None,
+    "hold_days": None,
+}
+
 # Historical date ranges for stress-test overlays
 STRESS_PERIODS = {
     "2008_gfc":       ("2008-01-01", "2009-06-30", "2008 GFC"),
@@ -50,7 +81,83 @@ STRESS_PERIODS = {
 
 # ── LLM parsing (provider-agnostic) ──────────────────────────────────────────
 
-async def _parse_strategy(description: str, provider: str, model: Optional[str]) -> dict:
+async def _parse_strategy_dual(description: str, provider: str, model: Optional[str]) -> dict:
+    """Parse strategy into holdings + trading_rules. Returns raw LLM dict."""
+    raw = await _llm_extract(description, PARSE_DUAL_SYSTEM, provider, model)
+    holdings_raw = raw.get("holdings") or []
+    trading_rules_raw = raw.get("trading_rules") or {}
+
+    # Normalize holdings
+    parse_warnings: list[str] = []
+    holdings: list[dict] = []
+    seen_tickers: dict[str, int] = {}
+
+    for i, h in enumerate(holdings_raw):
+        ticker = str(h.get("ticker", "")).upper().strip()
+        alloc = h.get("allocation_pct")
+
+        if not ticker:
+            parse_warnings.append(f"Row {i + 1} missing ticker; skipped")
+            continue
+        try:
+            alloc = float(alloc)
+        except (TypeError, ValueError):
+            parse_warnings.append(f"Row {i + 1} ({ticker}) has invalid allocation; skipped")
+            continue
+        if alloc <= 0:
+            parse_warnings.append(f"Row {i + 1} ({ticker}) has non-positive allocation; skipped")
+            continue
+
+        if h.get("tier") is None:
+            parse_warnings.append(f"Row {i + 1} ({ticker}) missing tier; defaulted to 'Unknown'")
+
+        if ticker in seen_tickers:
+            orig_idx = seen_tickers[ticker]
+            holdings[orig_idx]["allocation_pct"] += alloc
+            parse_warnings.append(f"Duplicate ticker {ticker}; allocations merged")
+        else:
+            seen_tickers[ticker] = len(holdings)
+            holdings.append({
+                "ticker": ticker,
+                "allocation_pct": alloc,
+                "sector": h.get("sector"),
+                "tier": h.get("tier") or "Unknown",
+                "rationale": h.get("rationale"),
+            })
+
+    # Normalize allocation total to 100 if needed
+    total = sum(h["allocation_pct"] for h in holdings)
+    if holdings and abs(total - 100.0) > 0.1:
+        factor = 100.0 / total
+        for h in holdings:
+            h["allocation_pct"] = round(h["allocation_pct"] * factor, 4)
+        parse_warnings.append(f"Total allocation was {round(total, 2)}%; normalised to 100%")
+
+    # Determine strategy_mode
+    has_holdings = bool(holdings)
+    rules = trading_rules_raw or {}
+    has_rules = any(
+        rules.get(k) is not None
+        for k in ("buy_pct_drop", "sell_pct_gain", "stop_loss_pct", "hold_days")
+    )
+
+    if has_holdings and has_rules:
+        strategy_mode = "allocation_and_rules"
+    elif has_holdings:
+        strategy_mode = "allocation_only"
+    else:
+        strategy_mode = "rules_only"
+
+    return {
+        "holdings": holdings,
+        "trading_rules": rules,
+        "parse_warnings": parse_warnings,
+        "strategy_mode": strategy_mode,
+    }
+
+
+async def _llm_extract(description: str, system_prompt: str, provider: str, model: Optional[str]) -> dict:
+    """Low-level LLM call returning a parsed dict."""
     if provider in ("ollama", "ollama-cloud"):
         from backend.services import ollama_client
         if provider == "ollama-cloud":
@@ -59,15 +166,15 @@ async def _parse_strategy(description: str, provider: str, model: Optional[str])
                 raise ValueError("OLLAMA_API_KEY not set")
             _model = model or ollama_client.OLLAMA_CLOUD_DEFAULT_MODEL
             result = await ollama_client.extract_json(
-                description, PARSE_SYSTEM, model=_model,
+                description, system_prompt, model=_model,
                 host=ollama_client.OLLAMA_CLOUD_HOST, api_key=_api_key,
             )
         else:
             _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
-            result = await ollama_client.extract_json(description, PARSE_SYSTEM, model=_model)
+            result = await ollama_client.extract_json(description, system_prompt, model=_model)
         if result and result != {"theses": [], "relationships": []}:
             return result
-        raise ValueError("Ollama returned no parseable strategy JSON")
+        raise ValueError("Ollama returned no parseable JSON")
     else:
         import boto3
         region = os.getenv("BEDROCK_REGION", "eu-west-1")
@@ -75,12 +182,16 @@ async def _parse_strategy(description: str, provider: str, model: Optional[str])
         client = boto3.client("bedrock-runtime", region_name=region)
         resp = client.converse(
             modelId=model_id,
-            system=[{"text": PARSE_SYSTEM}],
+            system=[{"text": system_prompt}],
             messages=[{"role": "user", "content": [{"text": description}]}],
         )
         text = resp["output"]["message"]["content"][0]["text"]
         start, end = text.find("{"), text.rfind("}") + 1
         return json.loads(text[start:end])
+
+
+async def _parse_strategy(description: str, provider: str, model: Optional[str]) -> dict:
+    return await _llm_extract(description, PARSE_SYSTEM, provider, model)
 
 
 # ── Transaction cost model ─────────────────────────────────────────────────────
@@ -299,7 +410,7 @@ def _monte_carlo(
     daily_returns: list[float],
     initial_capital: float,
     n_simulations: int = 500,
-    horizon_days: int | None = None,
+    horizon_days: Optional[int] = None,
 ) -> dict:
     """
     Bootstrap Monte Carlo: resample daily returns with replacement.
@@ -609,9 +720,15 @@ class PortfolioHolding(BaseModel):
     weight: float   # 0.0–1.0; weights are normalised server-side if they don't sum to 1
 
 
+class ParseStrategyRequest(BaseModel):
+    strategy_description: str
+    provider: str = "bedrock"
+    model: Optional[str] = None
+
+
 class PortfolioSimulationRequest(BaseModel):
     strategy_description: str
-    holdings: list[PortfolioHolding]   # list of {ticker, weight}
+    holdings: Optional[list[PortfolioHolding]] = None  # optional when auto_parse_holdings=True
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
@@ -624,6 +741,21 @@ class PortfolioSimulationRequest(BaseModel):
     benchmark_symbol: str = "SPY"
     commission_bps: float = DEFAULT_COMMISSION_BPS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
+    auto_parse_holdings: bool = True
+    auto_parse_rules: bool = True
+    strict_parse: bool = False
+
+
+# ── Parse-strategy endpoint ──────────────────────────────────────────────────
+
+@router.post("/parse-strategy")
+async def parse_strategy_endpoint(req: ParseStrategyRequest):
+    """Parse strategy_description into holdings + trading rules for preview/debug."""
+    try:
+        parsed = await _parse_strategy_dual(req.strategy_description, req.provider, req.model)
+    except Exception as exc:
+        raise HTTPException(422, f"Failed to parse strategy: {exc}")
+    return parsed
 
 
 # ── Main endpoint ─────────────────────────────────────────────────────────────
@@ -711,21 +843,51 @@ async def run_simulation(req: SimulationRequest):
 
 @router.post("/run-portfolio")
 async def run_portfolio_simulation(req: PortfolioSimulationRequest):
-    if not req.holdings:
-        raise HTTPException(422, "holdings list is empty")
+    parse_warnings: list[str] = []
+    parsed_holdings_out: list[dict] | None = None
 
-    # Normalise weights so they sum to 1
-    total_w = sum(h.weight for h in req.holdings)
-    if total_w <= 0:
-        raise HTTPException(422, "weights must be positive")
-    tickers = [h.ticker.upper() for h in req.holdings]
-    weights = [h.weight / total_w for h in req.holdings]
+    # Resolve holdings: explicit payload takes priority; fall back to auto-parse
+    if req.holdings:
+        total_w = sum(h.weight for h in req.holdings)
+        if total_w <= 0:
+            raise HTTPException(422, "weights must be positive")
+        tickers = [h.ticker.upper() for h in req.holdings]
+        weights = [h.weight / total_w for h in req.holdings]
+        rules = None  # resolved below
+    elif req.auto_parse_holdings:
+        try:
+            parsed = await _parse_strategy_dual(req.strategy_description, req.provider, req.model)
+        except Exception as exc:
+            raise HTTPException(422, f"Failed to parse strategy: {exc}")
 
-    # 1. Parse strategy rules (shared across all legs)
-    try:
-        rules = await _parse_strategy(req.strategy_description, req.provider, req.model)
-    except Exception as exc:
-        raise HTTPException(422, f"Failed to parse strategy: {exc}")
+        parse_warnings = parsed["parse_warnings"]
+        if req.strict_parse and parse_warnings:
+            raise HTTPException(422, f"Strict parse failed: {parse_warnings[0]}")
+
+        if not parsed["holdings"]:
+            raise HTTPException(422, "No holdings found in strategy_description and none provided")
+
+        parsed_holdings_out = parsed["holdings"]
+        total_alloc = sum(h["allocation_pct"] for h in parsed["holdings"])
+        tickers = [h["ticker"] for h in parsed["holdings"]]
+        weights = [h["allocation_pct"] / total_alloc for h in parsed["holdings"]]
+
+        # Use parsed trading rules if present, else default allocation-run profile
+        tr = parsed.get("trading_rules") or {}
+        has_rules = any(tr.get(k) is not None for k in ("buy_pct_drop", "sell_pct_gain", "stop_loss_pct", "hold_days"))
+        rules = tr if has_rules else dict(DEFAULT_ALLOCATION_RUN_RULES)
+    else:
+        raise HTTPException(422, "holdings list is empty and auto_parse_holdings is disabled")
+
+    # 1. Parse strategy rules if not already resolved via dual parser
+    if rules is None:
+        if req.auto_parse_rules:
+            try:
+                rules = await _parse_strategy(req.strategy_description, req.provider, req.model)
+            except Exception as exc:
+                raise HTTPException(422, f"Failed to parse strategy: {exc}")
+        else:
+            rules = dict(DEFAULT_ALLOCATION_RUN_RULES)
 
     # 2. Fetch candles for all tickers + benchmark in parallel
     async def _fetch(symbol: str) -> list[dict]:
@@ -789,6 +951,8 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
         "total_costs":   total_costs,
         "commission_bps": req.commission_bps,
         "slippage_bps":  req.slippage_bps,
+        "parsed_holdings": parsed_holdings_out,
+        "parse_warnings":  parse_warnings,
     }
 
     # 6. Optional analytics on blended curve

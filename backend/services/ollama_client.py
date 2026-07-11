@@ -168,6 +168,39 @@ async def chat(
                     messages.append({"role": "tool", "content": result})
 
 
+async def classify_text(
+    system_prompt: str,
+    message: str,
+    model: str = OLLAMA_DEFAULT_MODEL,
+    host: str = OLLAMA_HOST,
+    api_key: str = "",
+) -> str:
+    """
+    Lightweight single-shot completion — no tools, short output. Used for intent
+    routing. Returns the raw assistant text, or "" on transport failure.
+    Pass host=OLLAMA_CLOUD_HOST and api_key for cloud.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        try:
+            resp = await client.post(
+                f"{host}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 8},
+                },
+            )
+            resp.raise_for_status()
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
+            return ""
+    return resp.json().get("message", {}).get("content", "")
+
+
 async def extract_json(
     content: str,
     prompt: str,

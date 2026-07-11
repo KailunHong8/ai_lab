@@ -101,9 +101,15 @@ export const runSimulation = (payload: {
   run_stress_tests?: boolean;
 }) => api.post("/api/simulation/run", payload).then((r) => r.data);
 
+export const parseStrategy = (payload: {
+  strategy_description: string;
+  provider?: string;
+  model?: string;
+}) => api.post("/api/simulation/parse-strategy", payload).then((r) => r.data);
+
 export const runPortfolioSimulation = (payload: {
   strategy_description: string;
-  holdings: { ticker: string; weight: number }[];
+  holdings?: { ticker: string; weight: number }[];
   benchmark_symbol?: string;
   start_date: string;
   end_date: string;
@@ -114,4 +120,6 @@ export const runPortfolioSimulation = (payload: {
   monte_carlo_sims?: number;
   run_walk_forward?: boolean;
   run_stress_tests?: boolean;
+  auto_parse_holdings?: boolean;
+  auto_parse_rules?: boolean;
 }) => api.post("/api/simulation/run-portfolio", payload).then((r) => r.data);

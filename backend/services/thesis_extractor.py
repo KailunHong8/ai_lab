@@ -141,6 +141,12 @@ async def extract_and_save(
             type=thesis_type,
             date=doc_date,
             document_id=document_id,
+            # Mirror taxonomy from parent document
+            source_type=doc.source_type if doc else None,
+            fund=doc.fund if doc else None,
+            reliability_tier=doc.reliability_tier if doc else None,
+            recency_flag=doc.recency_flag if doc else None,
+            expiration_at=doc.expiration_at if doc else None,
         )
         db.add(thesis)
         thesis_count += 1

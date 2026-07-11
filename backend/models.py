@@ -8,6 +8,31 @@ import enum
 from backend.db import Base
 
 
+# ── Knowledge taxonomy constants ──────────────────────────────────────────────
+
+CORPUS_PRINCIPLES = "principles"
+CORPUS_MARKET_OPINION = "market_opinion"
+
+SOURCE_TYPE_PRINCIPLE_TEXT = "principle_text"
+SOURCE_TYPE_FUND_LETTER = "fund_letter"
+SOURCE_TYPE_WEB_RESEARCH = "web_research"
+SOURCE_TYPE_USER_SYNTHESIS = "user_synthesis"
+
+CHANNEL_MANUAL_PASTE = "manual_paste"
+CHANNEL_FILE_UPLOAD = "file_upload"
+CHANNEL_MBOX = "mbox"
+CHANNEL_PERPLEXITY = "perplexity"
+
+RECENCY_EVERGREEN = "evergreen"
+RECENCY_TIMELY = "timely"
+RECENCY_STALE = "stale"
+
+RELIABILITY_PRINCIPLES = 1
+RELIABILITY_FUND_LETTER = 2
+RELIABILITY_USER_SYNTHESIS = 3
+RELIABILITY_WEB_RESEARCH = 4
+
+
 class TransactionType(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -61,13 +86,26 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    source: Mapped[str] = mapped_column(String(64))          # "ARK", "textbook", etc.
+    source: Mapped[str] = mapped_column(String(64))          # fund name, e.g. "ARK", "GMO", etc.
     title: Mapped[str] = mapped_column(String(256))
     content: Mapped[str] = mapped_column(Text)
     date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     email_id: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Taxonomy fields (spec §7)
+    corpus: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)           # principles | market_opinion
+    source_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)                  # principle_text | fund_letter | web_research | user_synthesis
+    fund: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)             # ARK | GMO | Sequoia | Bridgewater | …
+    channel: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)                      # manual_paste | file_upload | mbox | perplexity
+    reliability_tier: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    published_at: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    recency_flag: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, default=RECENCY_TIMELY)  # evergreen | timely | stale
+    expiration_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)             # TTL for web_research entries
+    citations_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)                     # JSON list of citation URLs/titles
+    ingestion_job_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     theses: Mapped[list["Thesis"]] = relationship("Thesis", back_populates="document", cascade="all, delete-orphan")
 
@@ -77,7 +115,7 @@ class Thesis(Base):
     __tablename__ = "theses"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    source: Mapped[str] = mapped_column(String(64))          # "ARK", "textbook", etc.
+    source: Mapped[str] = mapped_column(String(64))          # fund name or "textbook"
     theme: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     entity: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
     stance: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # bullish/bearish/neutral
@@ -86,6 +124,13 @@ class Thesis(Base):
     date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     document_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("documents.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Taxonomy fields mirrored from parent document (spec §7)
+    source_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    fund: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    reliability_tier: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    recency_flag: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    expiration_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     document: Mapped[Optional["Document"]] = relationship("Document", back_populates="theses")
 

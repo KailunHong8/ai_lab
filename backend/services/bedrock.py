@@ -2,12 +2,13 @@
 AWS Bedrock Converse API wrapper with tool-use support.
 
 Tools available to the agent:
-  - get_quote(symbol)              → FMP/Yahoo real-time quote
-  - get_portfolio()                → current user holdings from DB
-  - search_theses(entity, theme)   → current market opinions from uploaded research
-  - get_entity_graph(symbol)       → supply chain / competitor / customer graph
-  - search_principles(query)       → timeless investing principles from the book library
-  - search_ark_newsletter(query)   → fuzzy semantic recall over raw ARK newsletter text
+  - get_quote(symbol)               → FMP/Yahoo real-time quote
+  - get_portfolio()                 → current user holdings from DB
+  - search_theses(entity, theme)    → structured investment theses from all funds
+  - get_entity_graph(symbol)        → supply chain / competitor / customer graph
+  - search_principles(query)        → timeless investing principles from the book library
+  - search_market_opinion(query)    → semantic search over fund letters + Perplexity web research
+  - get_screener_history(limit)     → historical stock screener runs
 """
 from __future__ import annotations
 
@@ -168,13 +169,15 @@ TOOLS = [
     },
     {
         "toolSpec": {
-            "name": "search_ark_newsletter",
+            "name": "search_market_opinion",
             "description": (
-                "Fuzzy semantic search over raw ARK Invest newsletter text. "
-                "Use for open-ended recall questions like 'where did ARK discuss exchange vertical integration?' "
-                "or 'what did ARK say about energy storage costs?'. "
-                "Returns citation snippets with source filename. "
-                "For precise structured questions like 'what is ARK stance on NVDA?', prefer search_theses instead."
+                "Semantic search over the market-opinion corpus: fund letters (ARK, GMO, Sequoia, "
+                "Bridgewater) and Perplexity web research. "
+                "Use for open-ended recall questions like 'what did ARK say about energy storage?' "
+                "or 'what is the current market view on AI capex?'. "
+                "Returns citation snippets with source and recency metadata. "
+                "Optionally filter by fund (e.g. 'ARK') or source_type ('fund_letter' or 'web_research'). "
+                "For precise structured stance questions use search_theses; for open-ended recall use this."
             ),
             "inputSchema": {
                 "json": {
@@ -182,8 +185,16 @@ TOOLS = [
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Fuzzy topic or phrase to search for in ARK newsletters"
-                        }
+                            "description": "Topic or phrase to search for"
+                        },
+                        "fund": {
+                            "type": "string",
+                            "description": "Optional: filter to a specific fund, e.g. 'ARK', 'GMO', 'Sequoia', 'Bridgewater'"
+                        },
+                        "source_type": {
+                            "type": "string",
+                            "description": "Optional: 'fund_letter' or 'web_research'"
+                        },
                     },
                     "required": ["query"],
                 }
@@ -193,28 +204,32 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = (
-    "You are Quant, an AI trading copilot with access to three distinct knowledge sources — "
-    "treat them very differently:\n\n"
-    "1. INVESTING PRINCIPLES (search_principles tool): A curated library of classic investing and finance books "
-    "(Brealey-Myers-Allen, Shiller, Poor Charlie's Almanack, and others added over time). "
+    "You are Quant, an AI trading copilot. You have access to four tiers of knowledge — "
+    "always reason in this order and never collapse the tiers:\n\n"
+    "TIER 1 — INVESTING PRINCIPLES (search_principles tool, reliability: highest): "
+    "A curated library of classic finance and investing books. "
     "This is established theory and timeless wisdom. Treat it as ground truth. "
     "Use it to frame the 'why' — valuation logic, risk models, mental models, capital allocation discipline.\n\n"
-    "2. CURRENT MARKET OPINIONS (search_theses tool): Structured investment theses extracted from uploaded research — "
-    "newsletters, ARK reports, analyst notes, etc. These are indexed by entity and theme for exact lookup. "
-    "Always label claims as facts or forecasts and note the source and date. "
-    "Use them for the 'what and when' — specific stocks, near-term themes, catalysts.\n\n"
-    "3. ARK NEWSLETTER RAW TEXT (search_ark_newsletter tool): The full unstructured text of ARK Invest newsletters. "
-    "Use for fuzzy recall — e.g. 'where did ARK discuss X?', 'what did ARK say about Y topic?'. "
-    "Returns citation snippets. For precise stance questions use search_theses; for open-ended recall use this.\n\n"
-    "Reasoning pattern: ground every investment argument in principles first, then layer on current opinions. "
-    "For example: 'Brealey's CAPM implies a required return of X% for this beta — ARK's thesis forecasts Y%, "
-    "which clears that hurdle [or does not].'\n\n"
-    "You also have access to real-time market data, the user's paper-trading portfolio, "
-    "and their historical screener runs (get_screener_history). "
-    "When discussing specific stocks, check if they appear in past screens and note how they scored. "
-    "Always cite which source (book title, or thesis source + date) your reasoning draws from. "
-    "Never confuse a verified fact with a forecast. "
-    "You operate in a paper-trading simulation — no real money is at risk."
+    "TIER 2 — FUND LETTERS (search_theses + search_market_opinion filtered to fund_letter, reliability: high): "
+    "Structured theses and raw text from curated fund letters (ARK, GMO, Sequoia, Bridgewater, and others). "
+    "These are expert opinions, not facts. Always label the fund, date, and whether the claim is a fact or forecast.\n\n"
+    "TIER 3 — WEB RESEARCH / MARKET SENTIMENT (search_market_opinion filtered to web_research, reliability: lower): "
+    "Perplexity-sourced market context. Time-sensitive; check the ingestion date and note if potentially stale. "
+    "Never use this as the sole basis for a recommendation.\n\n"
+    "Reasoning pattern: ground every investment argument in TIER 1 principles first, layer fund opinions second, "
+    "add web context last as supporting colour. "
+    "Example: 'Brealey's CAPM implies a required return of X% for this beta — "
+    "ARK's thesis (2025-03) forecasts Y%, which clears that hurdle [or does not]. "
+    "Current market sentiment (Perplexity, 2026-06) notes Z as a near-term risk.'\n\n"
+    "RULES:\n"
+    "- Always cite source (book title, or fund + date, or 'Perplexity web research, ingested YYYY-MM-DD').\n"
+    "- Explicitly label FACT vs FORECAST for every claim.\n"
+    "- Never use market sentiment alone as the core recommendation basis.\n"
+    "- When discussing specific stocks, check get_screener_history for how they scored in past value screens.\n"
+    "- If search_theses returns no stored research for a ticker, call get_quote for that ticker and "
+    "base the analysis on live market data, clearly noting that no curated research was available.\n\n"
+    "You also have access to real-time market data and the user's paper-trading portfolio. "
+    "No real money is at risk."
 )
 
 
@@ -237,6 +252,17 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
         theme = tool_input.get("theme") or None
         async with SessionLocal() as db:
             results = await search_theses(entity, theme, limit=8, db=db)
+        if not results and entity:
+            # No stored research on this ticker — signal the agent to fall back to
+            # a live quote for fresh analysis instead of claiming no information.
+            return json.dumps({
+                "results": [],
+                "note": (
+                    f"No stored theses for {entity.upper()} in the knowledge base. "
+                    f"Call get_quote('{entity.upper()}') for live market data and base "
+                    f"the analysis on that instead."
+                ),
+            })
         return json.dumps(results)
 
     if name == "get_entity_graph":
@@ -252,9 +278,14 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
         results = search_principles(tool_input.get("query", ""), top_k=8)
         return json.dumps(results)
 
-    if name == "search_ark_newsletter":
-        from backend.services.ark_research import search_ark
-        results = search_ark(tool_input.get("query", ""), top_k=4)
+    if name == "search_market_opinion":
+        from backend.services.market_opinion_research import search_market_opinion
+        results = search_market_opinion(
+            tool_input.get("query", ""),
+            top_k=6,
+            fund=tool_input.get("fund") or None,
+            source_type=tool_input.get("source_type") or None,
+        )
         return json.dumps(results)
 
     if name == "get_screener_history":

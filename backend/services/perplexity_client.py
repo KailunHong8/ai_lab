@@ -69,6 +69,35 @@ def _format_citations(data: dict) -> str:
     return f"\n\n**Sources:**\n{lines}"
 
 
+def format_citations_footer(citations: list[dict]) -> str:
+    """Render a Sources footer from a normalised [{url, title}] citation list."""
+    urls: list[str] = []
+    for c in citations:
+        url = c.get("url")
+        if url:
+            title = c.get("title")
+            urls.append(f"{title} — {url}" if title else url)
+    if not urls:
+        return ""
+    lines = "\n".join(f"{i}. {u}" for i, u in enumerate(urls, 1))
+    return f"\n\n**Sources:**\n{lines}"
+
+
+async def _call_perplexity(messages: list[dict], session_id: str, user_message: str) -> dict:
+    """
+    Shared transport layer. Returns raw API response dict, or raises on error.
+    Caller is responsible for LLMLogger context.
+    """
+    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}"} if PERPLEXITY_API_KEY else {}
+    async with httpx.AsyncClient(timeout=PERPLEXITY_TIMEOUT, headers=headers) as client:
+        resp = await client.post(
+            f"{PERPLEXITY_BASE_URL}/chat/completions",
+            json={"model": PERPLEXITY_MODEL, "messages": messages, "stream": False},
+        )
+        resp.raise_for_status()
+    return resp.json()
+
+
 async def research(
     message: str,
     history: list[dict] | None = None,
@@ -79,46 +108,94 @@ async def research(
     messages.extend(_history_to_openai(history))
     messages.append({"role": "user", "content": message})
 
-    headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}"} if PERPLEXITY_API_KEY else {}
-
     async with LLMLogger("perplexity", PERPLEXITY_MODEL, session_id, message) as trace:
-        async with httpx.AsyncClient(timeout=PERPLEXITY_TIMEOUT, headers=headers) as client:
-            try:
-                resp = await client.post(
-                    f"{PERPLEXITY_BASE_URL}/chat/completions",
-                    json={"model": PERPLEXITY_MODEL, "messages": messages, "stream": False},
-                )
-                resp.raise_for_status()
-            except httpx.ConnectError:
-                reply = (
-                    "Research provider unreachable. Start the perplexity-scrape proxy "
-                    "(or set PERPLEXITY_BASE_URL to the Sonar API) and try again."
-                )
-                trace.finish(reply)
-                return reply
-            except httpx.TimeoutException:
-                reply = "Research request timed out. Please try again."
-                trace.finish(reply)
-                return reply
-            except httpx.HTTPStatusError as exc:
-                reply = f"Research provider error {exc.response.status_code}: {exc.response.text[:200]}"
-                trace.finish(reply)
-                return reply
-
-            data = resp.json()
-            try:
-                reply = data["choices"][0]["message"]["content"] or ""
-            except (KeyError, IndexError, TypeError):
-                reply = "Research provider returned an unexpected response."
-                trace.finish(reply)
-                return reply
-
-            reply += _format_citations(data)
-
-            usage = data.get("usage") or {}
-            trace.finish(
-                reply,
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+        try:
+            data = await _call_perplexity(messages, session_id, message)
+        except httpx.ConnectError:
+            reply = (
+                "Research provider unreachable. Start the perplexity-scrape proxy "
+                "(or set PERPLEXITY_BASE_URL to the Sonar API) and try again."
             )
+            trace.finish(reply)
             return reply
+        except httpx.TimeoutException:
+            reply = "Research request timed out. Please try again."
+            trace.finish(reply)
+            return reply
+        except httpx.HTTPStatusError as exc:
+            reply = f"Research provider error {exc.response.status_code}: {exc.response.text[:200]}"
+            trace.finish(reply)
+            return reply
+
+        try:
+            reply = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            reply = "Research provider returned an unexpected response."
+            trace.finish(reply)
+            return reply
+
+        reply += _format_citations(data)
+
+        usage = data.get("usage") or {}
+        trace.finish(
+            reply,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+        )
+        return reply
+
+
+async def research_raw(
+    query: str,
+    history: list[dict] | None = None,
+    session_id: str = "",
+) -> dict:
+    """
+    Run a Perplexity query and return structured output for ingestion.
+
+    Returns:
+        {
+            "content": str,           # full answer text (no citation footer appended)
+            "citations": list[dict],  # [{url, title}] list
+            "input_tokens": int,
+            "output_tokens": int,
+        }
+
+    Raises httpx exceptions on transport failure — caller should handle.
+    """
+    messages = [{"role": "system", "content": RESEARCH_SYSTEM}]
+    messages.extend(_history_to_openai(history))
+    messages.append({"role": "user", "content": query})
+
+    async with LLMLogger("perplexity", PERPLEXITY_MODEL, session_id, query) as trace:
+        data = await _call_perplexity(messages, session_id, query)
+
+        content = ""
+        try:
+            content = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            pass
+
+        raw_citations = data.get("citations") or data.get("search_results") or []
+        citations: list[dict] = []
+        for c in raw_citations:
+            if isinstance(c, str):
+                citations.append({"url": c, "title": ""})
+            elif isinstance(c, dict):
+                citations.append({
+                    "url": c.get("url") or c.get("link") or "",
+                    "title": c.get("title") or "",
+                })
+
+        usage = data.get("usage") or {}
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+
+        trace.finish(content, input_tokens=input_tokens, output_tokens=output_tokens)
+
+        return {
+            "content": content,
+            "citations": citations,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }

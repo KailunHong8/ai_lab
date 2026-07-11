@@ -21,12 +21,27 @@ async def search_theses(
     theme: Optional[str],
     limit: int,
     db: AsyncSession,
+    fund: Optional[str] = None,
+    source_type: Optional[str] = None,
+    recency_flag: Optional[str] = None,
+    exclude_stale: bool = False,
 ) -> list[dict]:
+    from datetime import datetime
     q = select(Thesis)
     if entity:
         q = q.where(Thesis.entity == entity.upper())
     if theme:
         q = q.where(Thesis.theme.ilike(f"%{theme}%"))
+    if fund:
+        q = q.where(Thesis.fund == fund)
+    if source_type:
+        q = q.where(Thesis.source_type == source_type)
+    if recency_flag:
+        q = q.where(Thesis.recency_flag == recency_flag)
+    if exclude_stale:
+        q = q.where(
+            (Thesis.expiration_at == None) | (Thesis.expiration_at > datetime.utcnow())  # noqa: E711
+        )
     q = q.order_by(Thesis.date.desc()).limit(limit)
     result = await db.execute(q)
     rows = result.scalars().all()
@@ -40,6 +55,10 @@ async def search_theses(
             "claims": json.loads(r.claims) if r.claims else [],
             "type": r.type,
             "date": r.date,
+            "fund": r.fund,
+            "source_type": r.source_type,
+            "reliability_tier": r.reliability_tier,
+            "recency_flag": r.recency_flag,
         }
         for r in rows
     ]

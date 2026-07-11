@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { runSimulation, runPortfolioSimulation, listOllamaModels } from "../api/client";
+import { runSimulation, runPortfolioSimulation, parseStrategy, listOllamaModels } from "../api/client";
 import {
   ResponsiveContainer,
   LineChart,
@@ -61,6 +61,21 @@ interface TickerContrib {
   win_rate: number;
 }
 
+interface ParsedHolding {
+  ticker: string;
+  allocation_pct: number;
+  sector: string | null;
+  tier: string | null;
+  rationale: string | null;
+}
+
+interface ParsedStrategy {
+  holdings: ParsedHolding[];
+  trading_rules: Record<string, unknown>;
+  parse_warnings: string[];
+  strategy_mode: "allocation_only" | "rules_only" | "allocation_and_rules";
+}
+
 interface SimResult {
   pnl: number;
   pnl_pct: number;
@@ -83,6 +98,8 @@ interface SimResult {
   walk_forward?: WalkForward;
   stress_tests?: StressPeriod[];
   per_ticker?: TickerContrib[];
+  parsed_holdings?: ParsedHolding[] | null;
+  parse_warnings?: string[];
 }
 
 interface Holding {
@@ -160,6 +177,10 @@ export default function Simulation() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<"equity" | "holdings" | "mc" | "wf" | "stress" | "rules">("equity");
+  const [parsedPreview, setParsedPreview] = useState<ParsedStrategy | null>(null);
+  const [parseLoading, setParseLoading] = useState(false);
+  const [parseError, setParseError] = useState("");
+  const [confirmedParsed, setConfirmedParsed] = useState(false);
 
   useEffect(() => {
     listOllamaModels()
@@ -188,6 +209,40 @@ export default function Simulation() {
   const addHolding = () => setHoldings((prev) => [...prev, { ticker: "", weight: "5" }]);
   const removeHolding = (i: number) => setHoldings((prev) => prev.filter((_, idx) => idx !== i));
   const totalWeight = holdings.reduce((s, h) => s + (parseFloat(h.weight) || 0), 0);
+
+  const handleAutoFill = async () => {
+    if (!form.strategy_description.trim()) return;
+    setParseError("");
+    setParsedPreview(null);
+    setConfirmedParsed(false);
+    setParseLoading(true);
+    try {
+      const parsed: ParsedStrategy = await parseStrategy({
+        strategy_description: form.strategy_description,
+        provider,
+        model: model || undefined,
+      });
+      if (!parsed.holdings.length) {
+        setParseError("No allocation table found in strategy description.");
+        return;
+      }
+      setParsedPreview(parsed);
+    } catch (err: any) {
+      setParseError(err.response?.data?.detail ?? err.message);
+    } finally {
+      setParseLoading(false);
+    }
+  };
+
+  const handleConfirmAutoFill = () => {
+    if (!parsedPreview) return;
+    setHoldings(parsedPreview.holdings.map((h) => ({
+      ticker: h.ticker,
+      weight: String(h.allocation_pct),
+    })));
+    setConfirmedParsed(true);
+    setParsedPreview(null);
+  };
 
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -324,14 +379,76 @@ export default function Simulation() {
                   {Math.abs(totalWeight - 100) > 0.5 && " — weights auto-normalised on run"}
                   )
                 </label>
-                <button
-                  type="button"
-                  onClick={addHolding}
-                  className="text-xs text-blue-600 hover:underline"
-                >
-                  + Add row
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleAutoFill}
+                    disabled={parseLoading || !form.strategy_description.trim()}
+                    className="text-xs text-indigo-600 hover:underline disabled:opacity-40"
+                  >
+                    {parseLoading ? "Parsing…" : "Auto-fill from strategy"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addHolding}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    + Add row
+                  </button>
+                </div>
               </div>
+
+              {/* Parse error */}
+              {parseError && (
+                <p className="text-xs text-red-600 mb-2">{parseError}</p>
+              )}
+
+              {/* Parsed holdings preview + confirm */}
+              {parsedPreview && (
+                <div className="mb-3 border border-indigo-200 rounded-lg overflow-hidden">
+                  <div className="bg-indigo-50 px-3 py-2 flex items-center justify-between">
+                    <span className="text-xs font-medium text-indigo-700">
+                      Parsed {parsedPreview.holdings.length} holdings — review before applying
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setParsedPreview(null)}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmAutoFill}
+                        className="text-xs bg-indigo-600 text-white px-3 py-1 rounded hover:bg-indigo-700"
+                      >
+                        Apply to holdings
+                      </button>
+                    </div>
+                  </div>
+                  {parsedPreview.parse_warnings.length > 0 && (
+                    <div className="bg-amber-50 border-t border-amber-100 px-3 py-1.5 space-y-0.5">
+                      {parsedPreview.parse_warnings.map((w, i) => (
+                        <p key={i} className="text-xs text-amber-700">{w}</p>
+                      ))}
+                    </div>
+                  )}
+                  <div className="divide-y max-h-52 overflow-y-auto">
+                    {parsedPreview.holdings.map((h) => (
+                      <div key={h.ticker} className="grid grid-cols-[80px_60px_1fr] items-center px-3 py-1 text-xs">
+                        <span className="font-mono font-semibold text-gray-800">{h.ticker}</span>
+                        <span className="text-gray-500">{h.allocation_pct.toFixed(1)}%</span>
+                        <span className="text-gray-400 truncate">{h.sector}{h.tier ? ` · ${h.tier}` : ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {confirmedParsed && (
+                <p className="text-xs text-green-600 mb-2">Holdings applied from strategy — review and click Run Simulation.</p>
+              )}
               <div className="border rounded overflow-hidden">
                 <div className="grid grid-cols-[1fr_80px_28px] text-xs font-medium text-gray-400 bg-gray-50 px-3 py-1.5 border-b">
                   <span>Ticker</span><span>Weight %</span><span></span>
@@ -441,6 +558,16 @@ export default function Simulation() {
             {result.avg_drawdown_pct != null && <StatCard label="Avg DD" value={`-${fmt(result.avg_drawdown_pct, 2, "%")}`} />}
             {result.momentum_flag && <StatCard label="Momentum" value={result.momentum_flag === "positive" ? "↑ Pos." : "↓ Neg."} color={result.momentum_flag === "positive" ? "text-green-600" : "text-red-600"} hint="60-day trailing return direction." />}
           </div>
+
+          {/* ── Parse warnings (auto-fill) ── */}
+          {result.parse_warnings && result.parse_warnings.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 mb-4 space-y-1">
+              <p className="text-xs font-medium text-amber-700">Parse warnings:</p>
+              {result.parse_warnings.map((w, i) => (
+                <p key={i} className="text-xs text-amber-600">{w}</p>
+              ))}
+            </div>
+          )}
 
           {/* ── Tabs ── */}
           <div className="flex gap-1 mb-4 text-sm flex-wrap">
