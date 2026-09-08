@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from datetime import datetime
 from pathlib import Path
+
+# Sentinel epoch for evergreen (no expiry) documents: year 2286
+_EPOCH_EVERGREEN = 9999999999
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 MARKET_CHROMA_DIR = _PROJECT_ROOT / "chroma_market_opinion"
@@ -55,10 +60,20 @@ def _get_collection():
 
 # ── incremental index helpers ──────────────────────────────────────────────────
 
+def expiration_epoch(expiration_at: datetime | None) -> int:
+    """Return an integer epoch for Chroma metadata freshness filtering.
+    None / no-expiry → evergreen sentinel 9999999999.
+    """
+    if expiration_at is None:
+        return _EPOCH_EVERGREEN
+    return int(expiration_at.timestamp())
+
+
 def add_document(doc_id: str, content: str, metadata: dict | None = None) -> int:
     """
     Upsert chunks for one document into the market_opinion collection.
-    metadata keys: source_type, fund, channel, recency_flag, reliability_tier.
+    metadata keys: source_type, fund, channel, recency_flag, reliability_tier,
+    expiration_epoch (derived from expiration_at if present).
     Returns chunk count.
     """
     if not _HAS_CHROMA:
@@ -66,8 +81,17 @@ def add_document(doc_id: str, content: str, metadata: dict | None = None) -> int
     collection = _get_collection()
     if collection is None:
         return 0
-    meta_base = {k: str(v) for k, v in (metadata or {}).items() if v is not None}
+    meta_base = {k: str(v) for k, v in (metadata or {}).items() if v is not None and k != "expiration_at"}
     meta_base["doc_id"] = doc_id
+    # Store expiration as numeric epoch so Chroma $gt filter works
+    if "expiration_epoch" not in meta_base:
+        exp_at = (metadata or {}).get("expiration_at")
+        if isinstance(exp_at, datetime):
+            meta_base["expiration_epoch"] = str(int(exp_at.timestamp()))
+        elif exp_at is not None:
+            meta_base["expiration_epoch"] = str(exp_at)
+        else:
+            meta_base["expiration_epoch"] = str(_EPOCH_EVERGREEN)
 
     words = content.split()
     step = CHUNK_SIZE - CHUNK_OVERLAP
@@ -112,26 +136,31 @@ def remove_document(doc_id: str) -> None:
 
 # ── search ─────────────────────────────────────────────────────────────────────
 
-def _keyword_search(query: str, top_k: int, where: dict | None = None) -> list[dict]:
-    """Keyword fallback — does not apply Chroma where filters."""
+def _keyword_search(query: str, top_k: int, where: dict | None = None, exclude_stale: bool = True) -> list[dict]:
+    """Keyword fallback with optional freshness filtering."""
     if not _HAS_CHROMA:
         return []
     collection = _get_collection()
     if collection is None or collection.count() == 0:
         return []
-    # Fetch a broad set and score locally
     try:
         results = collection.get(include=["documents", "metadatas"])
     except Exception:
         return []
+    now_epoch = int(time.time())
     query_words = set(re.findall(r"\w+", query.lower()))
     scored = []
     for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
         if where:
-            # simple single-key equality filter
             match = all(meta.get(k) == v for k, v in where.items())
             if not match:
                 continue
+        if exclude_stale:
+            try:
+                if int(meta.get("expiration_epoch", _EPOCH_EVERGREEN)) <= now_epoch:
+                    continue
+            except (ValueError, TypeError):
+                pass
         score = len(query_words & set(re.findall(r"\w+", doc.lower())))
         if score > 0:
             scored.append((score, doc, meta))
@@ -147,10 +176,12 @@ def search_market_opinion(
     top_k: int = 8,
     fund: str | None = None,
     source_type: str | None = None,
+    exclude_stale: bool = True,
 ) -> list[dict]:
     """
     Semantic search over the market_opinion collection.
     Optionally filter by fund (e.g. "ARK") or source_type (e.g. "web_research").
+    exclude_stale=True (default) omits documents whose expiration_epoch has passed.
     Falls back to keyword search when Chroma unavailable or empty.
     """
     if not _HAS_CHROMA:
@@ -159,18 +190,30 @@ def search_market_opinion(
     if collection is None or collection.count() == 0:
         return []
 
-    where: dict | None = None
-    filters = {}
+    filters: dict = {}
     if fund:
         filters["fund"] = fund
     if source_type:
         filters["source_type"] = source_type
-    if filters:
-        if len(filters) == 1:
-            k, v = next(iter(filters.items()))
-            where = {k: {"$eq": v}}
-        else:
-            where = {"$and": [{k: {"$eq": v}} for k, v in filters.items()]}
+    if exclude_stale:
+        filters["expiration_epoch"] = {"$gt": int(time.time())}
+
+    # Build Chroma where clause
+    where: dict | None = None
+    # Separate equality filters from range filters
+    eq_filters = {k: v for k, v in filters.items() if isinstance(v, str)}
+    range_filters = {k: v for k, v in filters.items() if isinstance(v, dict)}
+
+    all_clauses = []
+    for k, v in eq_filters.items():
+        all_clauses.append({k: {"$eq": v}})
+    for k, v in range_filters.items():
+        all_clauses.append({k: v})
+
+    if len(all_clauses) == 1:
+        where = all_clauses[0]
+    elif len(all_clauses) > 1:
+        where = {"$and": all_clauses}
 
     try:
         kwargs: dict = {
@@ -193,7 +236,7 @@ def search_market_opinion(
             })
         return out
     except Exception:
-        return _keyword_search(query, top_k, filters or None)
+        return _keyword_search(query, top_k, eq_filters or None, exclude_stale=exclude_stale)
 
 
 # ── rebuild from DB ────────────────────────────────────────────────────────────
@@ -239,6 +282,7 @@ async def rebuild_market_opinion_index() -> int:
                 "channel": doc.channel or "",
                 "recency_flag": doc.recency_flag or "",
                 "reliability_tier": str(doc.reliability_tier or ""),
+                "expiration_epoch": str(expiration_epoch(doc.expiration_at)),
             }
             total += add_document(doc.id, doc.content, meta)
     return total

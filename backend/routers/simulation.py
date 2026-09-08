@@ -21,9 +21,13 @@ import os
 import random
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+import uuid
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.db import get_db
 from backend.services import fmp as fmp_service
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
@@ -746,6 +750,55 @@ class PortfolioSimulationRequest(BaseModel):
     strict_parse: bool = False
 
 
+# ── SimulationRun helpers ─────────────────────────────────────────────────────
+
+async def _persist_run(
+    db: AsyncSession,
+    *,
+    mode: str,
+    req_dict: dict,
+    payload: dict,
+    symbol: str | None = None,
+    holdings: list[dict] | None = None,
+    parsed_strategy: dict | None = None,
+) -> str:
+    """Persist a SimulationRun and return its id. Failures are swallowed."""
+    from backend.models import SimulationRun
+    run_id = str(uuid.uuid4())
+    summary_keys = {
+        "pnl", "pnl_pct", "annual_return_pct", "sharpe", "sortino", "calmar",
+        "max_drawdown_pct", "avg_drawdown_pct", "beta", "alpha_ann_pct",
+        "num_trades", "win_rate", "total_costs", "commission_bps", "slippage_bps",
+    }
+    summary = {k: payload[k] for k in summary_keys if k in payload}
+    try:
+        run = SimulationRun(
+            id=run_id,
+            mode=mode,
+            strategy_description=req_dict.get("strategy_description"),
+            symbol=symbol,
+            holdings_json=json.dumps(holdings) if holdings else None,
+            parsed_strategy_json=json.dumps(parsed_strategy) if parsed_strategy else None,
+            start_date=req_dict["start_date"],
+            end_date=req_dict["end_date"],
+            initial_capital=req_dict.get("initial_capital", 10000),
+            benchmark_symbol=req_dict.get("benchmark_symbol", "SPY"),
+            commission_bps=req_dict.get("commission_bps", 0),
+            slippage_bps=req_dict.get("slippage_bps", 0),
+            provider=req_dict.get("provider"),
+            model=req_dict.get("model"),
+            request_json=json.dumps(req_dict),
+            summary_json=json.dumps(summary),
+            result_json=json.dumps(payload),
+        )
+        db.add(run)
+        await db.commit()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("SimulationRun persist failed: %s", exc)
+    return run_id
+
+
 # ── Parse-strategy endpoint ──────────────────────────────────────────────────
 
 @router.post("/parse-strategy")
@@ -761,7 +814,7 @@ async def parse_strategy_endpoint(req: ParseStrategyRequest):
 # ── Main endpoint ─────────────────────────────────────────────────────────────
 
 @router.post("/run")
-async def run_simulation(req: SimulationRequest):
+async def run_simulation(req: SimulationRequest, db: AsyncSession = Depends(get_db)):
     # 1. Fetch primary candles
     candles = await fmp_service.get_history(req.symbol, req.start_date, req.end_date)
     if not candles:
@@ -836,13 +889,17 @@ async def run_simulation(req: SimulationRequest):
             else:
                 payload[{"mc": "monte_carlo", "wf": "walk_forward", "st": "stress_tests"}[key]] = result
 
+    run_id = await _persist_run(
+        db, mode="single", req_dict=req.model_dump(), payload=payload, symbol=req.symbol
+    )
+    payload["simulation_run_id"] = run_id
     return payload
 
 
 # ── Portfolio simulation endpoint ─────────────────────────────────────────────
 
 @router.post("/run-portfolio")
-async def run_portfolio_simulation(req: PortfolioSimulationRequest):
+async def run_portfolio_simulation(req: PortfolioSimulationRequest, db: AsyncSession = Depends(get_db)):
     parse_warnings: list[str] = []
     parsed_holdings_out: list[dict] | None = None
 
@@ -977,4 +1034,69 @@ async def run_portfolio_simulation(req: PortfolioSimulationRequest):
         for key, result in zip(tasks.keys(), results_gathered):
             payload[key_map[key]] = {"error": str(result)} if isinstance(result, Exception) else result
 
+    holdings_list = [{"ticker": t, "weight": w} for t, w in zip(tickers, weights)]
+    run_id = await _persist_run(
+        db, mode="portfolio", req_dict=req.model_dump(), payload=payload,
+        holdings=holdings_list,
+        parsed_strategy={"holdings": parsed_holdings_out, "parse_warnings": parse_warnings} if parsed_holdings_out else None,
+    )
+    payload["simulation_run_id"] = run_id
     return payload
+
+
+# ── Run history endpoints ─────────────────────────────────────────────────────
+
+@router.get("/runs")
+async def list_runs(limit: int = 20, db: AsyncSession = Depends(get_db)):
+    """List recent simulation runs (summary fields only, no full curve)."""
+    from sqlalchemy import select
+    from backend.models import SimulationRun
+    result = await db.execute(
+        select(SimulationRun).order_by(SimulationRun.created_at.desc()).limit(limit)
+    )
+    rows = result.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "created_at": r.created_at.isoformat(),
+            "mode": r.mode,
+            "symbol": r.symbol,
+            "start_date": r.start_date,
+            "end_date": r.end_date,
+            "initial_capital": float(r.initial_capital),
+            "benchmark_symbol": r.benchmark_symbol,
+            "provider": r.provider,
+            "model": r.model,
+            **json.loads(r.summary_json),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the full stored payload for a simulation run (sufficient to re-open)."""
+    from sqlalchemy import select
+    from backend.models import SimulationRun
+    result = await db.execute(select(SimulationRun).where(SimulationRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, f"Simulation run {run_id} not found")
+    return {
+        "id": run.id,
+        "created_at": run.created_at.isoformat(),
+        "mode": run.mode,
+        "symbol": run.symbol,
+        "holdings": json.loads(run.holdings_json) if run.holdings_json else None,
+        "parsed_strategy": json.loads(run.parsed_strategy_json) if run.parsed_strategy_json else None,
+        "start_date": run.start_date,
+        "end_date": run.end_date,
+        "initial_capital": float(run.initial_capital),
+        "benchmark_symbol": run.benchmark_symbol,
+        "commission_bps": run.commission_bps,
+        "slippage_bps": run.slippage_bps,
+        "provider": run.provider,
+        "model": run.model,
+        "request": json.loads(run.request_json),
+        "result": json.loads(run.result_json) if run.result_json else None,
+    }

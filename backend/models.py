@@ -22,6 +22,7 @@ CHANNEL_MANUAL_PASTE = "manual_paste"
 CHANNEL_FILE_UPLOAD = "file_upload"
 CHANNEL_MBOX = "mbox"
 CHANNEL_PERPLEXITY = "perplexity"
+CHANNEL_CHATGPT = "chatgpt"
 
 RECENCY_EVERGREEN = "evergreen"
 RECENCY_TIMELY = "timely"
@@ -236,3 +237,187 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")
+
+
+# ── Simulation Runs ───────────────────────────────────────────────────────────
+
+class SimulationRun(Base):
+    """Immutable record of one simulation run — enough to reproduce and re-open."""
+    __tablename__ = "simulation_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)          # UUID
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    mode: Mapped[str] = mapped_column(String(16))                           # "single" | "portfolio"
+    strategy_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    symbol: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)           # single mode
+    holdings_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)          # portfolio: [{ticker, weight}]
+    parsed_strategy_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # rules + warnings snapshot
+    start_date: Mapped[str] = mapped_column(String(10))
+    end_date: Mapped[str] = mapped_column(String(10))
+    initial_capital: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    benchmark_symbol: Mapped[str] = mapped_column(String(16))
+    commission_bps: Mapped[float] = mapped_column(Float)
+    slippage_bps: Mapped[float] = mapped_column(Float)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    request_json: Mapped[str] = mapped_column(Text)        # full request payload (reproduce run)
+    summary_json: Mapped[str] = mapped_column(Text)        # scalar metrics for cheap listing
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # full payload incl. curves
+
+    # Phase 2 — nullable FKs to Strategy Studio records
+    strategy_version_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    data_snapshot_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    validation_report_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    decisions: Mapped[list["Decision"]] = relationship("Decision", back_populates="simulation_run")
+
+
+# ── Strategy Studio ───────────────────────────────────────────────────────────
+
+class Strategy(Base):
+    """A named strategy — container for versioned StrategyDefinition records."""
+    __tablename__ = "strategies"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    versions: Mapped[list["StrategyVersion"]] = relationship("StrategyVersion", back_populates="strategy")
+
+
+class StrategyVersion(Base):
+    """
+    Immutable once status != 'draft'.
+    Editing a draft creates a new version.
+    """
+    __tablename__ = "strategy_versions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), ForeignKey("strategies.id"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    definition_json: Mapped[str] = mapped_column(Text)
+    definition_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="draft")   # draft | reviewed | archived
+    source_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parser_output_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    user_edits_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    compiled_plan_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    strategy: Mapped["Strategy"] = relationship("Strategy", back_populates="versions")
+    validation_reports: Mapped[list["ValidationReport"]] = relationship("ValidationReport", back_populates="strategy_version")
+
+
+class DataSnapshot(Base):
+    """Immutable record of one data fetch — provider, symbols, date range, content hash."""
+    __tablename__ = "data_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbols_json: Mapped[str] = mapped_column(Text)
+    start_date: Mapped[str] = mapped_column(String(10))
+    end_date: Mapped[str] = mapped_column(String(10))
+    source: Mapped[str] = mapped_column(String(32))
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    manifest_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ValidationReport(Base):
+    """Immutable validation report — folds, holdout, bootstrap, regime breakdown."""
+    __tablename__ = "validation_reports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    strategy_version_id: Mapped[str] = mapped_column(String(64), ForeignKey("strategy_versions.id"), index=True)
+    data_snapshot_id: Mapped[str] = mapped_column(String(64), ForeignKey("data_snapshots.id"))
+    fold_results_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    holdout_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bootstrap_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    regime_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[str] = mapped_column(Text)
+    gate_results_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    strategy_version: Mapped["StrategyVersion"] = relationship("StrategyVersion", back_populates="validation_reports")
+    data_snapshot: Mapped["DataSnapshot"] = relationship("DataSnapshot")
+
+
+# ── Decision Ledger ───────────────────────────────────────────────────────────
+
+class Decision(Base):
+    """Auditable record of one AI-assisted paper-trading decision."""
+    __tablename__ = "decisions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)           # UUID
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=1)
+    action: Mapped[str] = mapped_column(String(8))                          # "BUY" | "SELL"
+    symbol: Mapped[str] = mapped_column(String(16))
+    shares: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
+    price: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("transactions.id"), nullable=True)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("chat_sessions.id"), nullable=True)
+    thesis_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # JSON list of Thesis.id
+    document_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON list of Document.id
+    strategy_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    strategy_parsed_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    simulation_run_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("simulation_runs.id"), nullable=True)
+    confirmed_by_user: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    simulation_run: Mapped[Optional["SimulationRun"]] = relationship("SimulationRun", back_populates="decisions")
+
+
+# ── Multi-Agent Pipeline ───────────────────────────────────────────────────────
+
+class DataCache(Base):
+    """Key-value cache for market data with TTL."""
+    __tablename__ = "data_cache"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    data: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class TradeProposal(Base):
+    """Full record of one multi-agent analysis run."""
+    __tablename__ = "trade_proposals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    analysis_date: Mapped[str] = mapped_column(String(10))
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey("chat_sessions.id"), nullable=True)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Full JSON payload of the TradeProposalResult
+    result_json: Mapped[str] = mapped_column(Text)
+    # Quick-access fields
+    action: Mapped[str] = mapped_column(String(8))           # BUY | SELL | HOLD
+    confidence: Mapped[str] = mapped_column(String(8))
+    risk_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("transactions.id"), nullable=True)
+
+
+class DecisionMemory(Base):
+    """Tracks prior trade proposals + realized returns for reflection."""
+    __tablename__ = "decision_memory"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    action: Mapped[str] = mapped_column(String(8))
+    decision_date: Mapped[str] = mapped_column(String(10))
+    price_at_decision: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), ForeignKey("trade_proposals.id"))
+    horizon_date: Mapped[str] = mapped_column(String(10))    # decision_date + 30 days
+    realized_return: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    spy_return: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    reflection: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reflected_at: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)

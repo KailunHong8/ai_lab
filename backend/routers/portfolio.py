@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db import get_db
-from backend.models import Position, Transaction, TransactionType, User
+from backend.models import Decision, Position, Transaction, TransactionType, User
 from backend.services import fmp
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -48,14 +48,27 @@ class WithdrawRequest(BaseModel):
     amount: float
 
 
+class DecisionContext(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    session_id: Optional[str] = None
+    thesis_ids: Optional[list[str]] = None
+    document_ids: Optional[list[str]] = None
+    strategy_text: Optional[str] = None
+    strategy_parsed: Optional[dict] = None
+    simulation_run_id: Optional[str] = None
+
+
 class BuyRequest(BaseModel):
     symbol: str
     shares: float
+    decision_context: Optional[DecisionContext] = None
 
 
 class SellRequest(BaseModel):
     symbol: str
     shares: float
+    decision_context: Optional[DecisionContext] = None
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -136,6 +149,29 @@ async def buy(req: BuyRequest, db: AsyncSession = Depends(get_db)):
     )
     db.add(txn)
     await db.commit()
+    await db.refresh(txn)
+
+    if req.decision_context:
+        from backend.services.decisions import record_decision
+        ctx = req.decision_context
+        await record_decision(
+            db,
+            action="BUY",
+            symbol=symbol,
+            shares=float(shares),
+            price=float(price),
+            transaction_id=txn.id,
+            provider=ctx.provider,
+            model=ctx.model,
+            session_id=ctx.session_id,
+            thesis_ids=ctx.thesis_ids,
+            document_ids=ctx.document_ids,
+            strategy_text=ctx.strategy_text,
+            strategy_parsed=ctx.strategy_parsed,
+            simulation_run_id=ctx.simulation_run_id,
+            confirmed_by_user=True,
+        )
+
     return {
         "symbol": symbol,
         "shares": float(position.shares),
@@ -179,6 +215,29 @@ async def sell(req: SellRequest, db: AsyncSession = Depends(get_db)):
     )
     db.add(txn)
     await db.commit()
+    await db.refresh(txn)
+
+    if req.decision_context:
+        from backend.services.decisions import record_decision
+        ctx = req.decision_context
+        await record_decision(
+            db,
+            action="SELL",
+            symbol=symbol,
+            shares=float(shares),
+            price=float(price),
+            transaction_id=txn.id,
+            provider=ctx.provider,
+            model=ctx.model,
+            session_id=ctx.session_id,
+            thesis_ids=ctx.thesis_ids,
+            document_ids=ctx.document_ids,
+            strategy_text=ctx.strategy_text,
+            strategy_parsed=ctx.strategy_parsed,
+            simulation_run_id=ctx.simulation_run_id,
+            confirmed_by_user=True,
+        )
+
     return {
         "symbol": symbol,
         "proceeds": float(proceeds),
@@ -268,4 +327,32 @@ async def transactions(
             "timestamp": t.timestamp.isoformat(),
         }
         for t in txns
+    ]
+
+
+@router.get("/decisions")
+async def list_decisions(limit: int = 20, db: AsyncSession = Depends(get_db)):
+    """List recent AI-assisted trading decisions for audit."""
+    import json as _json
+    query = select(Decision).where(Decision.user_id == DEFAULT_USER_ID).order_by(Decision.created_at.desc()).limit(limit)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": d.id,
+            "created_at": d.created_at.isoformat(),
+            "action": d.action,
+            "symbol": d.symbol,
+            "shares": float(d.shares) if d.shares else None,
+            "price": float(d.price) if d.price else None,
+            "transaction_id": d.transaction_id,
+            "provider": d.provider,
+            "model": d.model,
+            "session_id": d.session_id,
+            "thesis_ids": _json.loads(d.thesis_ids_json) if d.thesis_ids_json else None,
+            "document_ids": _json.loads(d.document_ids_json) if d.document_ids_json else None,
+            "simulation_run_id": d.simulation_run_id,
+            "confirmed_by_user": d.confirmed_by_user,
+        }
+        for d in rows
     ]

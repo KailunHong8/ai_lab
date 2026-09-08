@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -13,7 +15,7 @@ from backend.models import (
     Document,
     CORPUS_PRINCIPLES, CORPUS_MARKET_OPINION,
     SOURCE_TYPE_PRINCIPLE_TEXT, SOURCE_TYPE_FUND_LETTER, SOURCE_TYPE_WEB_RESEARCH,
-    CHANNEL_MANUAL_PASTE, CHANNEL_FILE_UPLOAD, CHANNEL_MBOX, CHANNEL_PERPLEXITY,
+    CHANNEL_MANUAL_PASTE, CHANNEL_FILE_UPLOAD, CHANNEL_MBOX, CHANNEL_PERPLEXITY, CHANNEL_CHATGPT,
     RECENCY_EVERGREEN, RECENCY_TIMELY,
     RELIABILITY_PRINCIPLES, RELIABILITY_FUND_LETTER, RELIABILITY_WEB_RESEARCH,
 )
@@ -22,28 +24,47 @@ from backend.services import knowledge_base
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _FUND_NAMES = {"ARK", "GMO", "SEQUOIA", "BRIDGEWATER"}
+_UPLOAD_DOC_TYPES = {"auto", SOURCE_TYPE_FUND_LETTER, SOURCE_TYPE_PRINCIPLE_TEXT}
 
 TTL_DAYS_WEB_RESEARCH = 30
 
 
-def _classify_corpus(source: str) -> tuple[str, str, int]:
-    """Return (corpus, source_type, reliability_tier) based on source label."""
+def _classify_corpus(source: str, document_type: str = "auto") -> tuple[str, str, int]:
+    """Return (corpus, source_type, reliability_tier) based on explicit type or source label."""
+    if document_type == SOURCE_TYPE_FUND_LETTER:
+        return CORPUS_MARKET_OPINION, SOURCE_TYPE_FUND_LETTER, RELIABILITY_FUND_LETTER
+    if document_type == SOURCE_TYPE_PRINCIPLE_TEXT:
+        return CORPUS_PRINCIPLES, SOURCE_TYPE_PRINCIPLE_TEXT, RELIABILITY_PRINCIPLES
     if source.upper() in _FUND_NAMES:
         return CORPUS_MARKET_OPINION, SOURCE_TYPE_FUND_LETTER, RELIABILITY_FUND_LETTER
     return CORPUS_PRINCIPLES, SOURCE_TYPE_PRINCIPLE_TEXT, RELIABILITY_PRINCIPLES
+
+
+def _normalize_upload_document_type(document_type: Optional[str]) -> str:
+    normalized = (document_type or "auto").strip().lower()
+    if normalized not in _UPLOAD_DOC_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid document_type. Use one of: "
+                f"{', '.join(sorted(_UPLOAD_DOC_TYPES))}."
+            ),
+        )
+    return normalized
 
 
 def _index_document(doc: Document, content: str) -> None:
     """Dispatch document to the correct Chroma collection based on corpus."""
     import asyncio
     if doc.corpus == CORPUS_MARKET_OPINION:
-        from backend.services.market_opinion_research import add_document as add_market
+        from backend.services.market_opinion_research import add_document as add_market, expiration_epoch
         meta = {
             "source_type": doc.source_type or "",
             "fund": doc.fund or "",
             "channel": doc.channel or "",
             "recency_flag": doc.recency_flag or "",
             "reliability_tier": str(doc.reliability_tier or ""),
+            "expiration_epoch": str(expiration_epoch(doc.expiration_at)),
         }
         asyncio.get_event_loop().run_in_executor(None, add_market, doc.id, content, meta)
     else:
@@ -54,13 +75,14 @@ def _index_document(doc: Document, content: str) -> None:
 async def _async_index_document(doc: Document, content: str) -> None:
     import asyncio
     if doc.corpus == CORPUS_MARKET_OPINION:
-        from backend.services.market_opinion_research import add_document as add_market
+        from backend.services.market_opinion_research import add_document as add_market, expiration_epoch
         meta = {
             "source_type": doc.source_type or "",
             "fund": doc.fund or "",
             "channel": doc.channel or "",
             "recency_flag": doc.recency_flag or "",
             "reliability_tier": str(doc.reliability_tier or ""),
+            "expiration_epoch": str(expiration_epoch(doc.expiration_at)),
         }
         await asyncio.to_thread(add_market, doc.id, content, meta)
     else:
@@ -75,11 +97,14 @@ async def upload_document(
     date: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None),
+    document_type: Optional[str] = Form("auto"),
     provider: str = Form("bedrock"),
     model: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a document to the knowledge base by file upload or pasted text."""
+    normalized_document_type = _normalize_upload_document_type(document_type)
+
     if file:
         raw = await file.read()
         filename = (file.filename or "").lower()
@@ -95,7 +120,7 @@ async def upload_document(
             if not emails:
                 raise HTTPException(status_code=400, detail="No emails found in .mbox file.")
 
-            corpus, source_type, reliability_tier = _classify_corpus(source)
+            corpus, source_type, reliability_tier = _classify_corpus(source, normalized_document_type)
             recency_flag = RECENCY_EVERGREEN if corpus == CORPUS_PRINCIPLES else RECENCY_TIMELY
 
             imported = 0
@@ -147,22 +172,24 @@ async def upload_document(
                 _provider, _model = provider, model
 
                 async def _extract_all():
+                    import structlog as _sl
+                    _log = _sl.get_logger("knowledge.mbox_bg")
                     for did, _content in new_doc_ids:
                         try:
                             async with SessionLocal() as bg_db:
                                 await thesis_extractor.extract_and_save(
                                     did, _content, bg_db, provider=_provider, model=_model
                                 )
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            _log.error("thesis_extraction_failed", doc_id=did, error=str(_exc))
                         try:
                             async with SessionLocal() as bg_db:
                                 result = await bg_db.execute(select(Document).where(Document.id == did))
                                 _doc = result.scalar_one_or_none()
                                 if _doc:
                                     await _async_index_document(_doc, _content)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            _log.error("chroma_index_failed", doc_id=did, error=str(_exc))
 
                 asyncio.create_task(_extract_all())
 
@@ -202,7 +229,7 @@ async def upload_document(
     safe_date = (date or "unknown").replace("-", "")
     (DOCS_DIR / f"{safe_date}_{doc_id[:8]}.md").write_text(content, encoding="utf-8")
 
-    corpus, source_type, reliability_tier = _classify_corpus(source)
+    corpus, source_type, reliability_tier = _classify_corpus(source, normalized_document_type)
     recency_flag = RECENCY_EVERGREEN if corpus == CORPUS_PRINCIPLES else RECENCY_TIMELY
 
     doc = Document(
@@ -248,16 +275,20 @@ async def ingest_research_result(
     db: AsyncSession,
     provider: str = "bedrock",
     model: Optional[str] = None,
+    source: str = "perplexity",
+    channel: str = CHANNEL_PERPLEXITY,
+    title: Optional[str] = None,
 ) -> dict:
     """
-    Persist an already-fetched Perplexity research result as a market_opinion
-    document, then run thesis extraction and Chroma indexing.
+    Persist an already-fetched web research result as a market_opinion document,
+    then run thesis extraction and Chroma indexing.
 
-    Shared by the /ingest-perplexity endpoint and the agent research flow so both
-    land web research in the corpus through the same path. Returns a status dict.
+    Shared by the /ingest-perplexity and /ingest-chatgpt endpoints and the agent
+    research flow so all web research lands in the corpus through the same path
+    (market_opinion, web_research type, 30-day TTL). Returns a status dict.
     """
     if not content.strip():
-        raise HTTPException(status_code=502, detail="Perplexity returned empty content.")
+        raise HTTPException(status_code=502, detail="Research content is empty.")
 
     doc_id = hashlib.sha256(content.encode()).hexdigest()[:32]
 
@@ -269,11 +300,12 @@ async def ingest_research_result(
     tags = await _generate_tags(query, content, citations, provider=provider, model=model)
 
     expiration = datetime.utcnow() + timedelta(days=TTL_DAYS_WEB_RESEARCH)
-    title = f"[Perplexity] {topic}: {query[:80]}"
+    if title is None:
+        title = f"[Perplexity] {topic}: {query[:80]}"
 
     doc = Document(
         id=doc_id,
-        source="perplexity",
+        source=source,
         title=title,
         content=content,
         date=datetime.utcnow().strftime("%Y-%m-%d"),
@@ -281,7 +313,7 @@ async def ingest_research_result(
         corpus=CORPUS_MARKET_OPINION,
         source_type=SOURCE_TYPE_WEB_RESEARCH,
         fund=None,
-        channel=CHANNEL_PERPLEXITY,
+        channel=channel,
         reliability_tier=RELIABILITY_WEB_RESEARCH,
         recency_flag=RECENCY_TIMELY,
         expiration_at=expiration,
@@ -294,9 +326,35 @@ async def ingest_research_result(
 
     from backend.services import thesis_extractor
 
-    extraction_result = await thesis_extractor.extract_and_save(
-        doc_id, content, db, provider=provider, model=model
-    )
+    extraction_result = {
+        "theses": 0,
+        "relationships": 0,
+        "warning": "thesis extraction skipped",
+    }
+
+    extraction_provider = provider
+    extraction_model = model
+    if provider == "bedrock":
+        fallback_provider = "ollama-cloud" if os.getenv("OLLAMA_API_KEY", "").strip() else "ollama"
+        extraction_provider = fallback_provider
+        extraction_model = None
+
+    try:
+        extraction_result = await thesis_extractor.extract_and_save(
+            doc_id,
+            content,
+            db,
+            provider=extraction_provider,
+            model=extraction_model,
+        )
+    except Exception as exc:
+        extraction_result = {
+            "theses": 0,
+            "relationships": 0,
+            "warning": f"thesis extraction failed: {exc}",
+            "provider": extraction_provider,
+        }
+
     await _async_index_document(doc, content)
 
     return {
@@ -340,6 +398,68 @@ async def ingest_perplexity(
         db=db,
         provider=provider,
         model=model,
+    )
+
+
+# ── ChatGPT Go ingest (manual paste from embedded iframe) ────────────────────────
+
+_URL_RE = re.compile(r"https?://[^\s)\]<>\"']+")
+
+
+class ChatGPTIngestRequest(BaseModel):
+    text: str
+    ticker: Optional[str] = None
+    topic: Optional[str] = None
+
+
+def _extract_citations(text: str) -> list[dict]:
+    """Pull HTTP(S) links out of pasted text and dedupe them into citation dicts."""
+    seen: set[str] = set()
+    citations: list[dict] = []
+    for match in _URL_RE.findall(text):
+        url = match.rstrip(".,;")
+        if url in seen:
+            continue
+        seen.add(url)
+        citations.append({"url": url})
+    return citations
+
+
+@router.post("/ingest-chatgpt")
+async def ingest_chatgpt(
+    req: ChatGPTIngestRequest,
+    provider: str = "bedrock",
+    model: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Persist a research response pasted from the embedded ChatGPT Go workspace as a
+    market_opinion document. Extracts citation links from the text, runs thesis
+    extraction, and indexes into ChromaDB with a 30-day TTL — same path as Perplexity.
+
+    Input: { text: str, ticker?: str, topic?: str }
+    """
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Paste some ChatGPT output first.")
+
+    ticker = (req.ticker or "").strip().upper()
+    topic = (req.topic or ticker or "General").strip()
+    label = ticker or topic
+    title = f"[ChatGPT Go] Research: {label}"
+    query = f"ChatGPT Go research for {label}"
+
+    return await ingest_research_result(
+        query=query,
+        topic=topic,
+        content=text,
+        citations=_extract_citations(text),
+        db=db,
+        provider=provider,
+        model=model,
+        source="ChatGPT",
+        channel=CHANNEL_CHATGPT,
+        title=title,
     )
 
 
@@ -462,7 +582,7 @@ async def get_theses(
     fund: Optional[str] = None,
     source_type: Optional[str] = None,
     recency_flag: Optional[str] = None,
-    exclude_stale: bool = False,
+    exclude_stale: bool = True,
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
 ):
@@ -522,9 +642,8 @@ async def reindex_market_opinion():
 
 # ── Stale cleanup ──────────────────────────────────────────────────────────────
 
-@router.delete("/cleanup-stale")
-async def cleanup_stale(db: AsyncSession = Depends(get_db)):
-    """Remove all market_opinion documents whose expiration_at has passed."""
+async def remove_expired_market_opinion(db: AsyncSession) -> int:
+    """Delete all market_opinion documents whose expiration_at has passed. Returns count."""
     import asyncio
     from backend.services.market_opinion_research import remove_document
     result = await db.execute(
@@ -541,4 +660,11 @@ async def cleanup_stale(db: AsyncSession = Depends(get_db)):
         await asyncio.to_thread(remove_document, doc.id)
         removed += 1
     await db.commit()
+    return removed
+
+
+@router.delete("/cleanup-stale")
+async def cleanup_stale(db: AsyncSession = Depends(get_db)):
+    """Remove all market_opinion documents whose expiration_at has passed."""
+    removed = await remove_expired_market_opinion(db)
     return {"status": "ok", "removed": removed}

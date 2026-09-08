@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.db import init_db
 from backend.routers import market, portfolio, agent, simulation, knowledge, screener
-from backend.routers import sessions
+from backend.routers import sessions, strategies
 
 
 def _init_langfuse():
@@ -30,10 +30,24 @@ def _init_langfuse():
         print("✗ LangFuse init failed — check LANGFUSE_HOST and keys in .env")
 
 
+async def _cleanup_expired_on_startup() -> None:
+    """Best-effort: remove expired market-opinion docs at startup. Never blocks startup."""
+    try:
+        from backend.db import SessionLocal
+        from backend.routers.knowledge import remove_expired_market_opinion
+        async with SessionLocal() as db:
+            removed = await remove_expired_market_opinion(db)
+        if removed:
+            print(f"✓ Startup cleanup: removed {removed} expired market-opinion document(s)")
+    except Exception as exc:
+        print(f"⚠ Startup cleanup failed (non-fatal): {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     _init_langfuse()
+    await _cleanup_expired_on_startup()
     yield
 
 
@@ -41,7 +55,12 @@ app = FastAPI(title="Quant Agentic Trading API", version="1.0.0", lifespan=lifes
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,6 +73,7 @@ app.include_router(simulation.router)
 app.include_router(knowledge.router)
 app.include_router(screener.router)
 app.include_router(sessions.router)
+app.include_router(strategies.router)
 
 
 @app.get("/health")

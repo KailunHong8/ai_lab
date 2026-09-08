@@ -276,7 +276,7 @@ Then produce the report using the template in Step 4.
 | Server-side technical indicators | **Not available** on free tier | Computed from EOD OHLCV using pandas (see Step 2 recipes) |
 | Historical intraday backtesting | **Severely limited** | `backend/routers/simulation.py` operates on EOD OHLCV only |
 | Earnings surprise / analyst estimates | **Not available** on FMP free | FMP Starter+ required for `/v3/analyst-estimates` |
-| Options data (Greeks, chain) | **Not available** | Out of scope per SPEC.md |
+| Options data (Greeks, chain) | **Not available** | Out of scope per `change_specs/product_note.md` |
 | Macro data (GDP, CPI, yields) | **Not available** in the app | `comprehensive_analysis_enhanced.py` (standalone) uses yfinance for `^TNX`, `^VIX`, `DX-Y.NYB`, `^GSPC` |
 | DCF model | **Not built** | FMP Premium has a `/v4/discounted-cash-flow` endpoint; not wired into the backend |
 | International tickers | **Limited** | FMP free is US-only; yfinance fallback covers global but with lower reliability |

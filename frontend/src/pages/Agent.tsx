@@ -9,7 +9,10 @@ import {
   deleteSession,
   renameSession,
   listOllamaModels,
+  parseStrategy,
 } from "../api/client";
+import { PERPLEXITY_DISABLED } from "../config";
+import ProposalCard, { type Proposal } from "../components/ProposalCard";
 
 interface Message {
   role: "user" | "assistant";
@@ -64,6 +67,13 @@ export default function Agent() {
   const [btForm, setBtForm] = useState({ symbol: "SPY", start_date: "2020-01-01", end_date: "2024-01-01", initial_capital: "10000" });
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Multi-agent panel state
+  const [multiSymbol, setMultiSymbol] = useState("");
+  const [multiRunning, setMultiRunning] = useState(false);
+  const [multiPhases, setMultiPhases] = useState<Record<string, string>>({});
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [multiError, setMultiError] = useState<string | null>(null);
 
   // Check Ollama availability + load session list on mount
   useEffect(() => {
@@ -131,6 +141,75 @@ export default function Agent() {
 
   const handleStop = () => {
     abortRef.current?.abort();
+  };
+
+  const handleMultiRun = async () => {
+    if (!multiSymbol.trim() || multiRunning) return;
+    setMultiRunning(true);
+    setMultiPhases({});
+    setProposal(null);
+    setMultiError(null);
+
+    const PHASES = ["analysts", "debate", "trader", "risk"];
+    const phaseLabels: Record<string, string> = {
+      analysts: "Running analysts...",
+      debate: "Bull/Bear debate...",
+      trader: "Trader synthesizing...",
+      risk: "Risk assessment...",
+      complete: "Complete",
+      error: "Error",
+    };
+
+    try {
+      const resp = await fetch("/api/agent/multi-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: multiSymbol.trim().toUpperCase(),
+          provider,
+          model: model || null,
+          session_id: activeId || "",
+        }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Server error: ${resp.status}`);
+      }
+
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.phase === "error") {
+              setMultiError(event.error ?? "Unknown error");
+            } else if (event.phase === "complete" && event.result) {
+              setProposal(event.result as Proposal);
+              setMultiPhases((prev) => ({ ...prev, complete: "complete" }));
+            } else if (event.phase && event.status) {
+              setMultiPhases((prev) => ({ ...prev, [event.phase]: event.status }));
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+    } catch (err: any) {
+      setMultiError(err.message ?? "Request failed");
+    } finally {
+      setMultiRunning(false);
+    }
   };
 
   const send = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -278,15 +357,36 @@ export default function Agent() {
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
+                  const strategyText = backtestModal.text;
+                  setBacktestModal(null);
+                  try {
+                    const parsed = await parseStrategy({ strategy_description: strategyText, provider, model: model || undefined });
+                    if (parsed.holdings && parsed.holdings.length > 0) {
+                      navigate("/simulation", {
+                        state: {
+                          strategy: strategyText,
+                          holdings: parsed.holdings,
+                          tradingRules: parsed.trading_rules,
+                          parseWarnings: parsed.parse_warnings,
+                          mode: "portfolio",
+                          start_date: btForm.start_date,
+                          end_date: btForm.end_date,
+                          initial_capital: btForm.initial_capital,
+                        },
+                      });
+                      return;
+                    }
+                  } catch {
+                    // fall through to single-ticker path
+                  }
                   const params = new URLSearchParams({
-                    strategy: backtestModal.text,
+                    strategy: strategyText,
                     symbol: btForm.symbol,
                     start_date: btForm.start_date,
                     end_date: btForm.end_date,
                     initial_capital: btForm.initial_capital,
                   });
-                  setBacktestModal(null);
                   navigate(`/simulation?${params.toString()}`);
                 }}
                 className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
@@ -305,24 +405,29 @@ export default function Agent() {
           <div className="flex items-center gap-2 text-sm">
             <span className="text-gray-500">Agent:</span>
             <div className="flex rounded border overflow-hidden">
-              {(["auto", "advice", "research"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setAgentMode(m)}
-                  className={`px-3 py-1 text-xs font-medium ${
-                    agentMode === m
-                      ? "bg-emerald-600 text-white"
-                      : "bg-white text-gray-600 hover:bg-gray-50"
-                  }`}
-                  title={
-                    m === "auto" ? "Orchestrator routes to the best specialist" :
-                    m === "advice" ? "Tool-equipped investment-advice agent" :
-                    "Perplexity deep-research agent"
-                  }
-                >
-                  {m === "auto" ? "Auto" : m === "advice" ? "Advice" : "Research"}
-                </button>
-              ))}
+              {(["auto", "advice", "research"] as const).map((m) => {
+                const disabled = m === "research" && PERPLEXITY_DISABLED;
+                return (
+                  <button
+                    key={m}
+                    onClick={() => !disabled && setAgentMode(m)}
+                    disabled={disabled}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      agentMode === m
+                        ? "bg-emerald-600 text-white"
+                        : "bg-white text-gray-600 hover:bg-gray-50"
+                    } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
+                    title={
+                      disabled ? "Perplexity deep-research disabled — use the ChatGPT pane on the Research page" :
+                      m === "auto" ? "Orchestrator routes to the best specialist" :
+                      m === "advice" ? "Tool-equipped investment-advice agent" :
+                      "Perplexity deep-research agent"
+                    }
+                  >
+                    {m === "auto" ? "Auto" : m === "advice" ? "Advice" : "Research"}
+                  </button>
+                );
+              })}
             </div>
             <span className="text-gray-500">Backend:</span>
             <div className="flex rounded border overflow-hidden">
@@ -353,6 +458,84 @@ export default function Agent() {
             </select>
           </div>
         </div>
+
+        {/* Multi-agent analysis panel */}
+        <div className="mb-4 bg-white rounded-xl shadow p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm font-semibold text-gray-700">Multi-Agent Analysis</span>
+            <span className="text-xs text-gray-400">4-phase: Analysts → Debate → Trader → Risk</span>
+          </div>
+          <div className="flex gap-2">
+            <input
+              className="border rounded-lg px-3 py-1.5 text-sm w-32 uppercase focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="AAPL"
+              value={multiSymbol}
+              onChange={(e) => setMultiSymbol(e.target.value.toUpperCase())}
+              onKeyDown={(e) => { if (e.key === "Enter") handleMultiRun(); }}
+              disabled={multiRunning}
+            />
+            <button
+              onClick={handleMultiRun}
+              disabled={!multiSymbol.trim() || multiRunning}
+              className="bg-indigo-600 text-white rounded-lg px-4 py-1.5 text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {multiRunning ? "Running..." : "Analyze"}
+            </button>
+            {(proposal || multiError) && !multiRunning && (
+              <button
+                onClick={() => { setProposal(null); setMultiError(null); setMultiPhases({}); }}
+                className="text-xs text-gray-400 hover:text-gray-600 px-2"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {/* Phase stepper */}
+          {(multiRunning || Object.keys(multiPhases).length > 0) && (
+            <div className="flex items-center gap-3 mt-3">
+              {[
+                { key: "analysts", label: "Analysts" },
+                { key: "debate", label: "Debate" },
+                { key: "trader", label: "Trader" },
+                { key: "risk", label: "Risk" },
+              ].map(({ key, label }, idx) => {
+                const status = multiPhases[key];
+                return (
+                  <div key={key} className="flex items-center gap-1">
+                    {idx > 0 && <span className="text-gray-300 text-xs">→</span>}
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      status === "complete"
+                        ? "bg-emerald-100 text-emerald-700"
+                        : status === "running"
+                        ? "bg-blue-100 text-blue-700 animate-pulse"
+                        : "bg-gray-100 text-gray-400"
+                    }`}>
+                      {status === "complete" ? "✓ " : status === "running" ? "⟳ " : ""}{label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {multiError && (
+            <p className="mt-2 text-xs text-red-600">Error: {multiError}</p>
+          )}
+        </div>
+
+        {/* Proposal card */}
+        {proposal && (
+          <div className="mb-4">
+            <ProposalCard
+              proposal={proposal}
+              onDismiss={() => setProposal(null)}
+              onAddToPortfolio={(action, sym, sizePct) => {
+                navigate("/portfolio", { state: { prefillAction: action, prefillSymbol: sym, prefillSizePct: sizePct } });
+              }}
+            />
+          </div>
+        )}
 
         {!activeId ? (
           <div className="flex-1 flex flex-col items-center justify-center bg-white rounded-xl shadow text-gray-400">

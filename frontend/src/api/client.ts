@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const api = axios.create({ baseURL: "http://localhost:8000" });
+const api = axios.create({ baseURL: "" });
 
 // ── Market ────────────────────────────────────────────────────────────────────
 export const getQuote = (symbol: string) =>
@@ -50,6 +50,18 @@ export const agentChat = (
     .post("/api/agent/chat", { message, session_id, provider, model: model || null, agent_mode }, { signal })
     .then((r) => r.data);
 
+export const multiRun = (payload: {
+  symbol: string;
+  analysis_date?: string;
+  session_id?: string;
+  provider?: string;
+  model?: string | null;
+  debate_rounds?: number;
+}) => api.post("/api/agent/multi-run", payload, { responseType: "stream" });
+
+export const listProposals = (symbol?: string) =>
+  api.get("/api/agent/proposals", { params: symbol ? { symbol } : {} }).then((r) => r.data);
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 export const listSessions = () =>
   api.get("/api/sessions").then((r) => r.data);
@@ -75,6 +87,33 @@ export const listDocuments = () =>
 
 export const deleteDocument = (id: string) =>
   api.delete(`/api/knowledge/documents/${id}`).then((r) => r.data);
+
+export const ingestPerplexity = (payload: {
+  query: string;
+  topic: string;
+  provider?: string;
+  model?: string;
+}) =>
+  api
+    .post("/api/knowledge/ingest-perplexity", { query: payload.query, topic: payload.topic }, {
+      params: { provider: payload.provider, model: payload.model },
+    })
+    .then((r) => r.data);
+
+export const ingestChatGPT = (payload: {
+  text: string;
+  ticker?: string;
+  topic?: string;
+  provider?: string;
+  model?: string;
+}) =>
+  api
+    .post(
+      "/api/knowledge/ingest-chatgpt",
+      { text: payload.text, ticker: payload.ticker, topic: payload.topic },
+      { params: { provider: payload.provider, model: payload.model } },
+    )
+    .then((r) => r.data);
 
 // ── Screener ──────────────────────────────────────────────────────────────────
 export const runScreener = (tickers: string, minCriteria = 4) =>
@@ -123,3 +162,93 @@ export const runPortfolioSimulation = (payload: {
   auto_parse_holdings?: boolean;
   auto_parse_rules?: boolean;
 }) => api.post("/api/simulation/run-portfolio", payload).then((r) => r.data);
+
+// ── Strategy Studio ───────────────────────────────────────────────────────────
+
+export interface Instrument {
+  ticker: string;
+  target_weight?: number;
+  sector?: string;
+  rationale?: string;
+}
+export interface StrategyDefinition {
+  schema_version?: number;
+  preset?: string;
+  universe: { instruments: Instrument[]; benchmark_symbol?: string };
+  data: { start_date: string; end_date: string; price_basis?: string; feature_lag_bars?: number };
+  indicators?: Array<{ name: string; kind: string; lookback: number }>;
+  signals: {
+    entry?: { logic: string; predicates: Array<{ left: string; op: string; right: string }> };
+    exit?: { logic: string; predicates: Array<{ left: string; op: string; right: string }> };
+    buy_pct_drop?: number;
+    sell_pct_gain?: number;
+    stop_loss_pct?: number;
+    hold_days?: number;
+  };
+  execution?: { order_delay_bars?: number; fill_price?: string; rebalance?: string };
+  sizing?: { method?: string; vol_target_config?: { annual_target_vol?: number; lookback_bars?: number } };
+  costs?: { commission_bps?: number; spread_bps?: number; base_slippage_bps?: number };
+  constraints?: { long_only?: boolean; max_position_weight?: number; cash_reserve?: number };
+  unsupported_intents?: string[];
+}
+export interface ValidationFinding {
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+  field?: string;
+}
+
+export const parseToDefinition = (payload: {
+  strategy_description: string;
+  start_date: string;
+  end_date: string;
+  benchmark?: string;
+  provider?: string;
+  model?: string;
+  commission_bps?: number;
+  slippage_bps?: number;
+}) => api.post("/api/strategies/parse", payload).then((r) => r.data);
+
+export const createStrategy = (payload: {
+  name: string;
+  description?: string;
+  definition: StrategyDefinition;
+  source_prompt?: string;
+  parser_output_json?: string;
+}) => api.post("/api/strategies", payload).then((r) => r.data);
+
+export const listStrategies = () =>
+  api.get("/api/strategies").then((r) => r.data);
+
+export const getStrategy = (strategyId: string) =>
+  api.get(`/api/strategies/${strategyId}`).then((r) => r.data);
+
+export const updateStrategyVersion = (
+  strategyId: string,
+  versionId: string,
+  definition: StrategyDefinition,
+  note?: string,
+) => api.put(`/api/strategies/${strategyId}/versions/${versionId}`, { definition, user_edits_note: note }).then((r) => r.data);
+
+export const promoteStrategyVersion = (strategyId: string, versionId: string) =>
+  api.post(`/api/strategies/${strategyId}/versions/${versionId}/promote`).then((r) => r.data);
+
+export const compileStrategyVersion = (strategyId: string, versionId: string) =>
+  api.get(`/api/strategies/${strategyId}/versions/${versionId}/compile`).then((r) => r.data);
+
+export const validateStrategyVersion = (
+  strategyId: string,
+  versionId: string,
+  payload: { n_folds?: number; holdout_pct?: number; bootstrap_sims?: number },
+) => api.post(`/api/strategies/${strategyId}/versions/${versionId}/validate`, payload).then((r) => r.data);
+
+export const runStrategyBacktest = (
+  strategyId: string,
+  versionId: string,
+  payload: {
+    initial_capital?: number;
+    benchmark_symbol?: string;
+    run_monte_carlo?: boolean;
+    monte_carlo_sims?: number;
+  },
+) => api.post(`/api/strategies/${strategyId}/versions/${versionId}/backtest`, payload).then((r) => r.data);

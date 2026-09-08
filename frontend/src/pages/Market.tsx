@@ -51,6 +51,7 @@ export default function Market() {
   const [history, setHistory] = useState<HistoryCandle[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   // Show static suggestions instantly on every keystroke (no API call)
@@ -92,10 +93,11 @@ export default function Market() {
     setQuery(symbol);
     setLoading(true);
     setError("");
+    setWarning("");
     setQuote(null);
     setHistory([]);
     try {
-      const [q, h] = await Promise.all([
+      const [quoteResult, historyResult] = await Promise.allSettled([
         getQuote(symbol),
         getHistory(
           symbol,
@@ -103,16 +105,34 @@ export default function Market() {
           new Date().toISOString().slice(0, 10)
         ),
       ]);
+
+      if (quoteResult.status !== "fulfilled") {
+        throw quoteResult.reason;
+      }
+
+      const q = quoteResult.value;
       if (!q || !q.price) {
         setError(`No data found for "${symbol}".`);
       } else {
         setQuote(q);
-        setHistory(h.map((c: any) => ({ date: c.date, close: c.close })));
+
+        if (historyResult.status === "fulfilled") {
+          setHistory(historyResult.value.map((c: any) => ({ date: c.date, close: c.close })));
+        } else {
+          const detail = historyResult.reason?.response?.data?.detail ?? historyResult.reason?.message;
+          setWarning(
+            detail
+              ? `Quote loaded, but 90-day chart is unavailable: ${detail}`
+              : "Quote loaded, but 90-day chart is unavailable right now."
+          );
+        }
       }
     } catch (err: any) {
       const detail = err.response?.data?.detail ?? err.message;
       if (err.response?.status === 403) {
         setError(`FMP API key issue — ${detail}`);
+      } else if (detail) {
+        setError(`Failed to fetch data for "${symbol}": ${detail}`);
       } else {
         setError(`Failed to fetch data for "${symbol}". Try again.`);
       }
@@ -168,6 +188,7 @@ export default function Market() {
       </div>
 
       {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+      {warning && !error && <p className="text-amber-600 text-sm mb-4">{warning}</p>}
 
       {quote && (
         <div className="bg-white rounded-xl shadow p-5 mb-6 max-w-lg">

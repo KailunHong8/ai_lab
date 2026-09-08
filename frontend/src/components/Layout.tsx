@@ -9,6 +9,7 @@ const links = [
   { to: "/simulation", label: "Simulation" },
   { to: "/research", label: "Research" },
   { to: "/screener", label: "Screener" },
+  { to: "/strategy-studio", label: "Strategy Studio" },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {

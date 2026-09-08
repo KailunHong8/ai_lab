@@ -67,19 +67,3 @@ For multi-step tasks, state a brief plan:
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
----
-
-# Project Memory
-
-## Ollama Cloud — Free Tier Models
-
-The free tier of Ollama Cloud (https://ollama.com, API key in `OLLAMA_API_KEY`) supports these models without a paid subscription:
-
-- `gpt-oss:120b` — OpenAI's open-source GPT model, 120B params
-- `gemma4:31b` — Google Gemma 4, 31B params
-
-**Requires paid subscription (do not add to UI):**
-- `deepseek-v4-flash`, `kimi-k2.6`, `minimax-m2`/`m3`, `qwen3.5:397b`, `cogito-2.1:671b`, `deepseek-v3.1:671b-cloud`
-
-The frontend `OLLAMA_CLOUD_MODELS` constant in `frontend/src/pages/Agent.tsx` should only contain free-tier models.

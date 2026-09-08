@@ -5,7 +5,10 @@ import functools
 import os
 from typing import Optional
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -135,8 +138,9 @@ async def _research_reply(
             query=message, topic="chat", content=content, citations=raw["citations"],
             db=db, provider=provider, model=model,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        import structlog as _sl
+        _sl.get_logger("agent.research_ingest").error("ingest_failed", error=str(exc))
 
     return content + perplexity_client.format_citations_footer(raw["citations"])
 
@@ -201,3 +205,66 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     )
 
     return {"reply": reply, "session_id": req.session_id, "session_name": session.name, "intent": intent}
+
+
+# ── Multi-agent run ────────────────────────────────────────────────────────────
+
+class MultiRunRequest(BaseModel):
+    symbol: str
+    analysis_date: Optional[str] = None    # defaults to today
+    session_id: str = ""
+    provider: str = "bedrock"
+    model: Optional[str] = None
+    debate_rounds: int = 1
+
+
+@router.post("/multi-run")
+async def multi_run(req: MultiRunRequest, db: AsyncSession = Depends(get_db)):
+    from backend.services.multi_agent import run_streaming
+
+    analysis_date = date.fromisoformat(req.analysis_date) if req.analysis_date else date.today()
+
+    async def _generate():
+        try:
+            async for chunk in run_streaming(
+                symbol=req.symbol,
+                analysis_date=analysis_date,
+                provider=req.provider,
+                model=req.model,
+                session_id=req.session_id,
+                db=db,
+                debate_rounds=max(1, min(3, req.debate_rounds)),
+            ):
+                yield chunk
+        except Exception as exc:
+            import json
+            yield f"data: {json.dumps({'phase': 'error', 'error': str(exc)})}\n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get("/proposals")
+async def list_proposals(symbol: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from backend.models import TradeProposal
+    import json as _json
+
+    stmt = select(TradeProposal).order_by(TradeProposal.created_at.desc()).limit(50)
+    if symbol:
+        stmt = stmt.where(TradeProposal.symbol == symbol.upper())
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return {
+        "proposals": [
+            {
+                "id": r.id,
+                "symbol": r.symbol,
+                "analysis_date": r.analysis_date,
+                "action": r.action,
+                "confidence": r.confidence,
+                "risk_approved": r.risk_approved,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+    }

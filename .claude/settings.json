@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:docs.perplexity.ai)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(npx tsc *)",
+      "Bash(find /Users/kailun.hong -name \"perplexity-scrape\" -o -name \"perplexity_scrape\" 2>/dev/null | head -5; which perplexity-scrape 2>/dev/null || echo \"not in PATH\")",
+      "Read(//Users/kailun.hong/**)"
     ]
   }
 }

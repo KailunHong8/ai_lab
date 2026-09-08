@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useLocation } from "react-router-dom";
 import { runSimulation, runPortfolioSimulation, parseStrategy, listOllamaModels } from "../api/client";
 import {
   ResponsiveContainer,
@@ -156,20 +156,37 @@ function fmt(v: number | null | undefined, dec = 2, suffix = ""): string {
 
 export default function Simulation() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [mode, setMode] = useState<"single" | "portfolio">("single");
+  const location = useLocation();
+  const routerState = location.state as {
+    strategy?: string;
+    holdings?: ParsedHolding[];
+    tradingRules?: Record<string, unknown>;
+    parseWarnings?: string[];
+    mode?: "single" | "portfolio";
+    start_date?: string;
+    end_date?: string;
+    initial_capital?: string;
+  } | null;
+
+  const [mode, setMode] = useState<"single" | "portfolio">(routerState?.mode === "portfolio" ? "portfolio" : "single");
   const [form, setForm] = useState({
-    strategy_description: searchParams.get("strategy") || "",
+    strategy_description: routerState?.strategy ?? searchParams.get("strategy") ?? "",
     symbol: searchParams.get("symbol") || "AAPL",
     benchmark_symbol: "SPY",
-    start_date: searchParams.get("start_date") || "2020-01-01",
-    end_date: searchParams.get("end_date") || "2024-01-01",
-    initial_capital: searchParams.get("initial_capital") || "10000",
+    start_date: routerState?.start_date ?? searchParams.get("start_date") ?? "2020-01-01",
+    end_date: routerState?.end_date ?? searchParams.get("end_date") ?? "2024-01-01",
+    initial_capital: routerState?.initial_capital ?? searchParams.get("initial_capital") ?? "10000",
     monte_carlo_sims: "300",
     run_monte_carlo: true,
     run_walk_forward: true,
     run_stress_tests: true,
   });
-  const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_PORTFOLIO);
+  const [holdings, setHoldings] = useState<Holding[]>(
+    routerState?.holdings?.length
+      ? routerState.holdings.map((h) => ({ ticker: h.ticker, weight: String(h.allocation_pct) }))
+      : DEFAULT_PORTFOLIO
+  );
+  const [agentParseWarnings, setAgentParseWarnings] = useState<string[]>(routerState?.parseWarnings ?? []);
   const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
   const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
@@ -180,7 +197,8 @@ export default function Simulation() {
   const [parsedPreview, setParsedPreview] = useState<ParsedStrategy | null>(null);
   const [parseLoading, setParseLoading] = useState(false);
   const [parseError, setParseError] = useState("");
-  const [confirmedParsed, setConfirmedParsed] = useState(false);
+  // Start confirmed=false when arriving from agent (must confirm before run)
+  const [confirmedParsed, setConfirmedParsed] = useState(!routerState?.holdings?.length);
 
   useEffect(() => {
     listOllamaModels()
@@ -528,9 +546,42 @@ export default function Simulation() {
           </select>
         </div>
 
+        {/* Agent handoff: show parse warnings + confirm gate */}
+        {agentParseWarnings.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+            <p className="text-xs font-medium text-amber-700">Parse warnings from agent strategy:</p>
+            {agentParseWarnings.map((w, i) => (
+              <p key={i} className="text-xs text-amber-600">{w}</p>
+            ))}
+          </div>
+        )}
+
+        {!confirmedParsed && agentParseWarnings.length === 0 && routerState?.holdings?.length ? (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center justify-between">
+            <p className="text-xs text-blue-700">Holdings pre-filled from agent strategy. Review and confirm before running.</p>
+            <button
+              type="button"
+              onClick={() => setConfirmedParsed(true)}
+              className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 ml-3 whitespace-nowrap"
+            >
+              Confirm & enable run
+            </button>
+          </div>
+        ) : !confirmedParsed && agentParseWarnings.length > 0 && routerState?.holdings?.length ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setConfirmedParsed(true)}
+              className="text-xs bg-amber-600 text-white px-3 py-1.5 rounded hover:bg-amber-700"
+            >
+              Acknowledge warnings & confirm
+            </button>
+          </div>
+        ) : null}
+
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || (!confirmedParsed && !!routerState?.holdings?.length)}
           className="bg-blue-600 text-white rounded px-6 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
           {loading

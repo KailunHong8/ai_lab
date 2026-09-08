@@ -83,7 +83,7 @@ async def get_quote(symbol: str) -> dict:
             _handle_fmp_error(resp, "quote")
             data = resp.json()
             result = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
-    except (PermissionError, LookupError, httpx.RequestError):
+    except (PermissionError, LookupError, RuntimeError, httpx.HTTPError):
         pass
 
     if not result:
@@ -114,7 +114,7 @@ async def get_profile(symbol: str) -> dict:
             _handle_fmp_error(resp, "profile")
             data = resp.json()
             result = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
-    except (PermissionError, LookupError, httpx.RequestError):
+    except (PermissionError, LookupError, RuntimeError, httpx.HTTPError):
         pass
 
     if not result:
@@ -177,7 +177,7 @@ async def get_history(symbol: str, from_date: str, to_date: str) -> list[dict]:
                 result = list(reversed(data))
             elif isinstance(data, dict):
                 result = list(reversed(data.get("historical", [])))
-    except (PermissionError, LookupError, httpx.RequestError):
+    except (PermissionError, LookupError, RuntimeError, httpx.HTTPError):
         pass
 
     if not result:

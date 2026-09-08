@@ -8,6 +8,11 @@ chroma_principles/**/*.sqlite3-wal
 __pycache__/
 *.pyc
 
+# Graphify generated artifacts
+codebase_graph.md
+codebase_graph.json
+
 # Local environment secrets
 .env
 .env.*
+.perplexity.env

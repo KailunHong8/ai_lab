@@ -20,12 +20,13 @@ import boto3
 from botocore.config import Config
 from dotenv import load_dotenv
 
-from backend.services import fmp as fmp_service
+from backend.services import market_data as market_data_service
 
 load_dotenv()
 
 BEDROCK_REGION = os.getenv("BEDROCK_REGION", "eu-west-1")
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
+AWS_PROFILE = os.getenv("AWS_PROFILE")
 
 _bedrock = None
 
@@ -33,7 +34,8 @@ _bedrock = None
 def _client():
     global _bedrock
     if _bedrock is None:
-        _bedrock = boto3.client(
+        session = boto3.Session(profile_name=AWS_PROFILE)
+        _bedrock = session.client(
             "bedrock-runtime",
             region_name=BEDROCK_REGION,
             config=Config(read_timeout=300),
@@ -237,8 +239,8 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
     if name == "get_quote":
         symbol = tool_input.get("symbol", "")
         try:
-            data = await fmp_service.get_quote(symbol)
-            return json.dumps(data)
+            quote = await market_data_service.get_quote(symbol)
+            return json.dumps(quote.model_dump())
         except Exception as exc:
             return json.dumps({"error": str(exc)})
 
@@ -251,7 +253,7 @@ async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict |
         entity = tool_input.get("entity") or None
         theme = tool_input.get("theme") or None
         async with SessionLocal() as db:
-            results = await search_theses(entity, theme, limit=8, db=db)
+            results = await search_theses(entity, theme, limit=8, db=db, exclude_stale=True)
         if not results and entity:
             # No stored research on this ticker — signal the agent to fall back to
             # a live quote for fresh analysis instead of claiming no information.

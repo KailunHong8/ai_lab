@@ -124,7 +124,7 @@ export default function Screener() {
       <h1 className="text-2xl font-bold">Value Screener</h1>
       <p className="text-sm text-gray-500">
         Screens stocks using Buffett/Brealey/Munger criteria, then enriches passing
-        stocks with ARK research theses and investing insights.
+        stocks with fund research theses and investing insights.
       </p>
 
       {/* Controls */}
@@ -355,7 +355,7 @@ export default function Screener() {
                       </div>
                     )}
 
-                  {/* ARK Theses */}
+                  {/* Fund Theses */}
                   {stock.theses && stock.theses.length > 0 && (
                     <div>
                       <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">

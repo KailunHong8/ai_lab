@@ -24,7 +24,7 @@ async def search_theses(
     fund: Optional[str] = None,
     source_type: Optional[str] = None,
     recency_flag: Optional[str] = None,
-    exclude_stale: bool = False,
+    exclude_stale: bool = True,
 ) -> list[dict]:
     from datetime import datetime
     q = select(Thesis)

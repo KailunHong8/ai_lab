@@ -3,7 +3,7 @@ Stock screener endpoint.
 
 Applies value-investing filters (Buffett/Brealey/Shiller/Munger) to a watchlist.
 Data source: FMP /stable/ratios + /stable/profile first, yfinance as fallback.
-Enriches passing stocks with ARK research theses and per-ratio financial insights.
+Enriches passing stocks with fund research theses and per-ratio financial insights.
 Persists every run + per-ticker results to quant.db for AI copilot reference.
 """
 from __future__ import annotations
@@ -248,7 +248,7 @@ async def _persist_run(
 async def run_screener(
     tickers: str = Query(..., description="Comma-separated tickers, e.g. AAPL,MSFT,NVDA"),
     min_criteria: int = Query(4, description="Minimum criteria to pass (1-6)"),
-    enrich: bool = Query(True, description="Add ARK theses for passing stocks"),
+    enrich: bool = Query(True, description="Add fund theses for passing stocks"),
     db: AsyncSession = Depends(get_db),
 ):
     symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()]

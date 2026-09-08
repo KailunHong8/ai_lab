@@ -25,5 +25,8 @@ async def init_db():
     from backend.models import Document, Thesis, Entity, EntityRelationship  # noqa: F401
     from backend.models import ScreenerRun, ScreenerResult  # noqa: F401
     from backend.models import ChatSession, ChatMessage  # noqa: F401
+    from backend.models import SimulationRun, Decision  # noqa: F401
+    from backend.models import Strategy, StrategyVersion, DataSnapshot, ValidationReport  # noqa: F401
+    from backend.models import DataCache, TradeProposal, DecisionMemory  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

@@ -1,3 +1,10 @@
+# Archived v1 Functional Specification
+
+> **Deprecated July 2026.** This document describes the original MVP and is
+> preserved for historical context only. For current implementation details, see
+> [`code_context.md`](../../code_context.md). For current product direction, see
+> [`product_note.md`](../product_note.md).
+
 # Functional Specification — Quant Agentic Trading System
 
 ## Overview

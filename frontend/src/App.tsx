@@ -8,6 +8,7 @@ import Agent from "./pages/Agent";
 import Simulation from "./pages/Simulation";
 import Research from "./pages/Research";
 import Screener from "./pages/Screener";
+import StrategyStudio from "./pages/StrategyStudio";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/simulation" element={<Simulation />} />
           <Route path="/research" element={<Research />} />
           <Route path="/screener" element={<Screener />} />
+          <Route path="/strategy-studio" element={<StrategyStudio />} />
         </Routes>
       </Layout>
     </BrowserRouter>

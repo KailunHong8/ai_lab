@@ -1,0 +1,280 @@
+```xml
+<codebase>
+  <file path="backend/__init__.py" lang="python">
+  </file>
+  <file path="backend/db.py" lang="python">
+    <imports>backend.models, dotenv, os, sqlalchemy.ext.asyncio, sqlalchemy.orm</imports>
+    <class name="Base" extends="DeclarativeBase" line="14"/>
+    <functions>get_db, init_db</functions>
+  </file>
+  <file path="backend/main.py" lang="python">
+    <imports>backend.db, backend.routers, backend.routers.knowledge, backend.services, contextlib, dotenv, fastapi, fastapi.middleware.cors, os</imports>
+    <functions>_init_langfuse, _cleanup_expired_on_startup, lifespan, health</functions>
+  </file>
+  <file path="backend/models.py" lang="python">
+    <imports>backend.db, datetime, decimal, enum, sqlalchemy, sqlalchemy.orm, typing</imports>
+    <class name="TransactionType" extends="str, enum.Enum" line="37"/>
+    <class name="User" extends="Base" line="44"/>
+    <class name="Position" extends="Base" line="56"/>
+    <class name="Transaction" extends="Base" line="68"/>
+    <class name="Document" extends="Base" line="85"/>
+    <class name="Thesis" extends="Base" line="114"/>
+    <class name="Entity" extends="Base" line="139"/>
+    <class name="EntityRelationship" extends="Base" line="158"/>
+    <class name="ScreenerRun" extends="Base" line="174"/>
+    <class name="ScreenerResult" extends="Base" line="190"/>
+    <class name="ChatSession" extends="Base" line="209"/>
+    <class name="ChatMessage" extends="Base" line="228"/>
+    <class name="SimulationRun" extends="Base" line="244"/>
+    <class name="Strategy" extends="Base" line="277"/>
+    <class name="StrategyVersion" extends="Base" line="291"/>
+    <class name="DataSnapshot" extends="Base" line="316"/>
+    <class name="ValidationReport" extends="Base" line="331"/>
+    <class name="Decision" extends="Base" line="353"/>
+  </file>
+  <file path="backend/routers/__init__.py" lang="python">
+  </file>
+  <file path="backend/routers/agent.py" lang="python">
+    <imports>__future__, asyncio, backend.db, backend.models, backend.routers.knowledge, backend.routers.portfolio, backend.routers.sessions, backend.services, boto3, botocore.config, fastapi, functools, os, pydantic, sqlalchemy, sqlalchemy.ext.asyncio, structlog, typing</imports>
+    <class name="ChatRequest" extends="BaseModel" line="50"/>
+    <functions>_generate_title, _advice_reply, _research_reply, chat</functions>
+  </file>
+  <file path="backend/routers/knowledge.py" lang="python">
+    <imports>asyncio, backend.db, backend.models, backend.services, backend.services.knowledge_base, backend.services.market_opinion_research, backend.services.mbox_parser, backend.services.research, boto3, datetime, fastapi, functools, hashlib, io, json, os, pydantic, pypdf, re, sqlalchemy, sqlalchemy.ext.asyncio, structlog, typing</imports>
+    <class name="PerplexityIngestRequest" extends="BaseModel" line="265"/>
+    <class name="ChatGPTIngestRequest" extends="BaseModel" line="409"/>
+    <functions>_classify_corpus, _normalize_upload_document_type, _index_document, _async_index_document, upload_document, ingest_research_result, ingest_perplexity, _extract_citations, ingest_chatgpt, _generate_tags, list_documents, delete_document, get_theses, get_entity, search_docs, search_market_opinion_docs, reindex_principles, reindex_market_opinion, remove_expired_market_opinion, cleanup_stale</functions>
+  </file>
+  <file path="backend/routers/market.py" lang="python">
+    <imports>backend.services, fastapi</imports>
+    <functions>_fmp_exc_to_http, quote, profile, search, history</functions>
+  </file>
+  <file path="backend/routers/portfolio.py" lang="python">
+    <imports>__future__, backend.db, backend.models, backend.services, backend.services.decisions, datetime, decimal, fastapi, json, pydantic, sqlalchemy, sqlalchemy.ext.asyncio, typing</imports>
+    <class name="DepositRequest" extends="BaseModel" line="43"/>
+    <class name="WithdrawRequest" extends="BaseModel" line="47"/>
+    <class name="DecisionContext" extends="BaseModel" line="51"/>
+    <class name="BuyRequest" extends="BaseModel" line="62"/>
+    <class name="SellRequest" extends="BaseModel" line="68"/>
+    <functions>_get_or_create_user, _get_position, deposit, withdraw, buy, sell, holdings, summary, transactions, list_decisions</functions>
+  </file>
+  <file path="backend/routers/screener.py" lang="python">
+    <imports>__future__, asyncio, backend.db, backend.models, backend.services.knowledge_base, backend.services.ollama_client, datetime, fastapi, httpx, os, sqlalchemy, sqlalchemy.ext.asyncio, typing, yfinance</imports>
+    <functions>_fmp_fundamentals, _yfinance_fundamentals, _score, _persist_run, run_screener, screener_history, list_ollama_models</functions>
+  </file>
+  <file path="backend/routers/sessions.py" lang="python">
+    <imports>__future__, backend.db, backend.models, datetime, fastapi, pydantic, sqlalchemy, sqlalchemy.ext.asyncio, typing, uuid</imports>
+    <class name="CreateSessionRequest" extends="BaseModel" line="86"/>
+    <functions>list_sessions, create_session, get_messages, rename_session, delete_session, append_messages</functions>
+  </file>
+  <file path="backend/routers/simulation.py" lang="python">
+    <imports>__future__, asyncio, backend.db, backend.models, backend.services, boto3, fastapi, json, logging, math, os, pydantic, random, sqlalchemy, sqlalchemy.ext.asyncio, typing, uuid</imports>
+    <class name="SimulationRequest" extends="BaseModel" line="705"/>
+    <class name="PortfolioHolding" extends="BaseModel" line="722"/>
+    <class name="ParseStrategyRequest" extends="BaseModel" line="727"/>
+    <class name="PortfolioSimulationRequest" extends="BaseModel" line="733"/>
+    <functions>_parse_strategy_dual, _llm_extract, _parse_strategy, _run_backtest, _metrics, _trade_stats, _monte_carlo, _walk_forward, _portfolio_walk_forward, _stress_tests, _align_portfolio, _portfolio_stress_tests, _persist_run, parse_strategy_endpoint, run_simulation, run_portfolio_simulation, list_runs, get_run</functions>
+  </file>
+  <file path="backend/routers/strategies.py" lang="python">
+    <imports>__future__, asyncio, backend.db, backend.models, backend.routers.simulation, backend.services.strategy.compiler, backend.services.strategy.data_adapter, backend.services.strategy.engine, backend.services.strategy.metrics, backend.services.strategy.parser_adapter, backend.services.strategy.schema, backend.services.strategy.validation_protocol, datetime, fastapi, json, pydantic, sqlalchemy, sqlalchemy.ext.asyncio, typing, uuid</imports>
+    <class name="ParseRequest" extends="BaseModel" line="54"/>
+    <class name="CreateStrategyRequest" extends="BaseModel" line="65"/>
+    <class name="UpdateVersionRequest" extends="BaseModel" line="73"/>
+    <class name="ValidateRequest" extends="BaseModel" line="78"/>
+    <class name="BacktestRequest" extends="BaseModel" line="84"/>
+    <functions>_new_id, _now, _load_definition, _version_summary, parse_to_definition, create_strategy, list_strategies, get_strategy, update_version, promote_version, compile_version, validate_version, run_backtest</functions>
+  </file>
+  <file path="backend/services/__init__.py" lang="python">
+  </file>
+  <file path="backend/services/bedrock.py" lang="python">
+    <imports>__future__, asyncio, backend.db, backend.services, backend.services.knowledge_base, backend.services.llm_logger, backend.services.market_opinion_research, backend.services.research, boto3, botocore.config, dotenv, functools, httpx, json, os</imports>
+    <functions>_client, _dispatch_tool, chat</functions>
+  </file>
+  <file path="backend/services/decisions.py" lang="python">
+    <imports>__future__, backend.models, json, sqlalchemy.ext.asyncio, typing, uuid</imports>
+    <functions>record_decision</functions>
+  </file>
+  <file path="backend/services/fmp.py" lang="python">
+    <imports>backend.services, cachetools, dotenv, httpx, os, threading</imports>
+    <functions>_params, _handle_fmp_error, get_quote, get_profile, search_symbol, get_history</functions>
+  </file>
+  <file path="backend/services/knowledge_base.py" lang="python">
+    <imports>backend.models, datetime, json, pathlib, sqlalchemy, sqlalchemy.ext.asyncio, typing</imports>
+    <functions>search_theses, get_entity_graph, _score_chunk, full_text_search</functions>
+  </file>
+  <file path="backend/services/llm_logger.py" lang="python">
+    <imports>__future__, langfuse, os, pathlib, structlog, time, typing</imports>
+    <class name="LLMLogger" line="72">
+      <methods>__init__, __aenter__, add_tool_use, finish, __aexit__</methods>
+    </class>
+    <functions>_get_langfuse</functions>
+  </file>
+  <file path="backend/services/market_opinion_research.py" lang="python">
+    <imports>__future__, backend.db, backend.models, chromadb, chromadb.utils, datetime, os, pathlib, re, sqlalchemy, time</imports>
+    <functions>_get_collection, expiration_epoch, add_document, remove_document, _keyword_search, search_market_opinion, rebuild_market_opinion_index</functions>
+  </file>
+  <file path="backend/services/mbox_parser.py" lang="python">
+    <imports>__future__, bs4, email, email.header, email.utils, logging, re, typing</imports>
+    <functions>_decode_header_str, _parse_iso_date, _html_to_text, _extract_body, parse_mbox</functions>
+  </file>
+  <file path="backend/services/ollama_client.py" lang="python">
+    <imports>__future__, backend.services.bedrock, backend.services.llm_logger, httpx, json, os, uuid</imports>
+    <functions>_tools_to_ollama, _history_to_ollama, chat, classify_text, extract_json</functions>
+  </file>
+  <file path="backend/services/orchestrator.py" lang="python">
+    <imports>__future__, asyncio, backend.services, boto3, os, typing</imports>
+    <functions>_keyword_route, _match_intent, _classify_bedrock, _classify_ollama, classify_intent, build_synthesis_input</functions>
+  </file>
+  <file path="backend/services/perplexity_client.py" lang="python">
+    <imports>__future__, backend.services.llm_logger, httpx, os</imports>
+    <functions>_history_to_openai, _format_citations, format_citations_footer, _call_perplexity, research, research_raw</functions>
+  </file>
+  <file path="backend/services/research.py" lang="python">
+    <imports>__future__, chromadb, chromadb.utils, os, pathlib, pypdf, re</imports>
+    <functions>_extract_text, _build_chunks, _get_collection, _populate_collection, _semantic_search, _keyword_search, add_document_to_principles, remove_document_from_principles, _rrf_fuse, search_principles, rebuild_index</functions>
+  </file>
+  <file path="backend/services/strategy/__init__.py" lang="python">
+    <imports>backend.services.strategy.compiler, backend.services.strategy.schema</imports>
+  </file>
+  <file path="backend/services/strategy/compiler.py" lang="python">
+    <imports>__future__, backend.services.strategy.schema, datetime, enum, pydantic, typing</imports>
+    <class name="FindingSeverity" extends="str, enum.Enum" line="19"/>
+    <class name="ValidationFinding" extends="BaseModel" line="25"/>
+    <functions>_parse_date, _check_universe, _check_dates, _check_indicators, _check_signals, _check_execution, _check_sizing, _check_costs, _check_constraints, compile_strategy</functions>
+  </file>
+  <file path="backend/services/strategy/data_adapter.py" lang="python">
+    <imports>__future__, asyncio, backend.services, hashlib, json, logging, os, pydantic, typing</imports>
+    <class name="BarRecord" extends="TypedDict" line="21"/>
+    <class name="DailyBarCapability" extends="BaseModel" line="30"/>
+    <functions>get_capability, fetch_bars, fetch_bars_multi, _normalize_bars, build_snapshot_manifest, content_hash</functions>
+  </file>
+  <file path="backend/services/strategy/engine.py" lang="python">
+    <imports>__future__, backend.services.strategy.data_adapter, backend.services.strategy.metrics, backend.services.strategy.schema, math, typing</imports>
+    <functions>_sma, _ema, _rsi, _rolling_return, _rolling_vol, _compute_indicators, _resolve_operand, _eval_predicate, _eval_tree, _compute_adv, _adv_slippage, _vol_target_weight, run_single, run_portfolio, _empty_result</functions>
+  </file>
+  <file path="backend/services/strategy/metrics.py" lang="python">
+    <imports>__future__, math, typing</imports>
+    <functions>_safe_std, sharpe, sortino, max_drawdown, avg_drawdown, drawdown_series, calmar, annualized_return, annualized_volatility, beta_alpha, win_rate, turnover_annualized, compute_all</functions>
+  </file>
+  <file path="backend/services/strategy/parser_adapter.py" lang="python">
+    <imports>__future__, backend.services.strategy.schema</imports>
+    <functions>legacy_to_strategy_definition</functions>
+  </file>
+  <file path="backend/services/strategy/schema.py" lang="python">
+    <imports>__future__, hashlib, json, pydantic, typing</imports>
+    <class name="Instrument" extends="BaseModel" line="22"/>
+    <class name="UniverseSpec" extends="BaseModel" line="29"/>
+    <class name="DataSpec" extends="BaseModel" line="34"/>
+    <class name="IndicatorSpec" extends="BaseModel" line="41"/>
+    <class name="PredicateSpec" extends="BaseModel" line="47"/>
+    <class name="SignalTreeSpec" extends="BaseModel" line="54"/>
+    <class name="SignalSpec" extends="BaseModel" line="60"/>
+    <class name="ExecutionSpec" extends="BaseModel" line="70"/>
+    <class name="VolatilityTargetConfig" extends="BaseModel" line="77"/>
+    <class name="SizingSpec" extends="BaseModel" line="82"/>
+    <class name="CostSpec" extends="BaseModel" line="87"/>
+    <class name="ConstraintsSpec" extends="BaseModel" line="96"/>
+    <class name="StrategyDefinition" extends="BaseModel" line="103">
+      <methods>definition_hash, tickers</methods>
+    </class>
+    <class name="CompiledPlan" extends="BaseModel" line="128"/>
+  </file>
+  <file path="backend/services/strategy/validation_protocol.py" lang="python">
+    <imports>__future__, backend.services.strategy.data_adapter, backend.services.strategy.engine, backend.services.strategy.metrics, backend.services.strategy.schema, math, pydantic, random, typing</imports>
+    <class name="FoldResult" extends="BaseModel" line="20"/>
+    <class name="ValidationResult" extends="BaseModel" line="31"/>
+    <functions>_sma, label_regimes, run_rolling_folds, _slice_bars, _block_bootstrap_mc, _regime_metrics</functions>
+  </file>
+  <file path="backend/services/thesis_extractor.py" lang="python">
+    <imports>__future__, asyncio, backend.models, backend.services, boto3, json, os, sqlalchemy, sqlalchemy.ext.asyncio, typing, uuid</imports>
+    <functions>_call_bedrock, extract_and_save</functions>
+  </file>
+  <file path="backend/services/yahoo.py" lang="python">
+    <imports>asyncio, yfinance</imports>
+    <functions>get_quote, get_profile, get_history, search_symbol</functions>
+  </file>
+  <file path="frontend/src/App.tsx" lang="typescript">
+    <imports>./components/Layout, ./pages/Agent, ./pages/Dashboard, ./pages/Holdings, ./pages/Market, ./pages/Research, ./pages/Screener, ./pages/Simulation, ./pages/StrategyStudio, ./pages/Transactions, react-router-dom</imports>
+    <functions>App</functions>
+  </file>
+  <file path="frontend/src/api/client.ts" lang="typescript">
+    <imports>axios</imports>
+    <functions>getQuote, getProfile, searchSymbol, getHistory, getSummary, getHoldings, getTransactions, deposit, withdraw, buy, sell, agentChat, listSessions, createSession, getSessionMessages, renameSession, deleteSession, uploadDocument, listDocuments, deleteDocument, ingestPerplexity, ingestChatGPT, runScreener, listOllamaModels, runSimulation, parseStrategy, runPortfolioSimulation, parseToDefinition, createStrategy, listStrategies, getStrategy, updateStrategyVersion, promoteStrategyVersion, compileStrategyVersion, validateStrategyVersion, runStrategyBacktest</functions>
+  </file>
+  <file path="frontend/src/components/ChatGPTResearchPane.tsx" lang="typescript">
+    <imports>../api/client, react</imports>
+    <functions>ChatGPTResearchPane</functions>
+  </file>
+  <file path="frontend/src/components/Layout.tsx" lang="typescript">
+    <imports>react-router-dom</imports>
+    <functions>Layout</functions>
+  </file>
+  <file path="frontend/src/config.ts" lang="typescript">
+    <functions>PERPLEXITY_DISABLED</functions>
+  </file>
+  <file path="frontend/src/data/tickers.ts" lang="typescript">
+    <functions>searchTickers</functions>
+  </file>
+  <file path="frontend/src/main.tsx" lang="typescript">
+    <imports>./App.tsx, react, react-dom/client</imports>
+  </file>
+  <file path="frontend/src/pages/Agent.tsx" lang="typescript">
+    <imports>../config, react, react-markdown, react-router-dom</imports>
+    <functions>Agent</functions>
+  </file>
+  <file path="frontend/src/pages/Dashboard.tsx" lang="typescript">
+    <imports>../api/client, react</imports>
+    <functions>Dashboard</functions>
+  </file>
+  <file path="frontend/src/pages/Holdings.tsx" lang="typescript">
+    <imports>../api/client, react</imports>
+    <functions>Holdings</functions>
+  </file>
+  <file path="frontend/src/pages/Market.tsx" lang="typescript">
+    <imports>../api/client, ../data/tickers, react</imports>
+    <functions>Market</functions>
+  </file>
+  <file path="frontend/src/pages/Research.tsx" lang="typescript">
+    <imports>../api/client, ../components/ChatGPTResearchPane, ../config, axios, react</imports>
+    <functions>Research</functions>
+  </file>
+  <file path="frontend/src/pages/Screener.tsx" lang="typescript">
+    <imports>../api/client, react</imports>
+    <functions>Screener</functions>
+  </file>
+  <file path="frontend/src/pages/Simulation.tsx" lang="typescript">
+    <imports>../api/client, react, react-router-dom</imports>
+    <functions>Simulation</functions>
+  </file>
+  <file path="frontend/src/pages/StrategyStudio.tsx" lang="typescript">
+    <imports>react, react-router-dom</imports>
+    <functions>StrategyStudio</functions>
+  </file>
+  <file path="frontend/src/pages/Transactions.tsx" lang="typescript">
+    <imports>../api/client, react</imports>
+    <functions>Transactions</functions>
+  </file>
+  <file path="frontend/vite.config.ts" lang="typescript">
+    <imports>@vitejs/plugin-react, vite</imports>
+  </file>
+  <file path="scripts/backfill_documents.py" lang="python">
+    <imports>asyncio, backend.db, backend.models, backend.services, hashlib, pathlib, re, sqlalchemy, sys</imports>
+    <functions>_parse_filename, backfill</functions>
+  </file>
+  <file path="scripts/graphify.py" lang="python">
+    <imports>argparse, ast, dataclasses, json, pathlib, re, typing</imports>
+    <class name="Node" line="20"/>
+    <class name="Edge" line="30"/>
+    <class name="Graph" line="37"/>
+    <functions>_parse_python, _parse_typescript, _to_xml, _to_json, build_graph, main</functions>
+  </file>
+  <file path="scripts/migrate_phase2.py" lang="python">
+    <imports>pathlib, sqlite3, sys</imports>
+    <functions>_existing_columns, _table_exists, migrate</functions>
+  </file>
+  <file path="scripts/migrate_taxonomy.py" lang="python">
+    <imports>pathlib, sqlite3, sys</imports>
+    <functions>_existing_columns, migrate</functions>
+  </file>
+</codebase>
+```
