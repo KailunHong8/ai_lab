@@ -5,6 +5,7 @@ import functools
 import os
 from typing import Optional
 
+from botocore.exceptions import UnauthorizedSSOTokenError
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -93,12 +94,19 @@ async def _advice_reply(
             api_key=_api_key,
         )
     else:
-        return await bedrock.chat(
-            message=message,
-            history=history,
-            portfolio_snapshot=portfolio,
-            session_id=session_id,
-        )
+        try:
+            return await bedrock.chat(
+                message=message,
+                history=history,
+                portfolio_snapshot=portfolio,
+                session_id=session_id,
+                model_id=model,
+            )
+        except UnauthorizedSSOTokenError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="AWS SSO session has expired. Run `aws sso login` and retry.",
+            ) from exc
 
 
 async def _research_reply(

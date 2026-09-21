@@ -81,3 +81,9 @@
 11:52:05 PM [vite] (client) hmr update /src/index.css, /src/pages/Dashboard.tsx, /src/pages/Transactions.tsx, /src/pages/Market.tsx, /src/pages/Agent.tsx, /src/pages/Holdings.tsx, /src/pages/Screener.tsx, /src/pages/StrategyStudio.tsx, /src/pages/Research.tsx, /src/pages/Simulation.tsx, /src/components/ChatGPTResearchPane.tsx
 11:52:15 PM [vite] (client) hmr update /src/index.css, /src/pages/Research.tsx
 11:52:19 PM [vite] (client) hmr update /src/index.css, /src/pages/Agent.tsx
+2:31:53 AM [vite] http proxy error: /api/portfolio/summary
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+2:31:53 AM [vite] http proxy error: /api/portfolio/summary
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)

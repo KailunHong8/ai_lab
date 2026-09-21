@@ -1,4 +1,4 @@
-"""Technical indicator computation from OHLCV DataFrames (no API calls, pandas_ta)."""
+"""Technical indicator computation from OHLCV DataFrames (no API calls)."""
 from __future__ import annotations
 
 import pandas as pd
@@ -7,15 +7,36 @@ from backend.services.types import TechnicalSnapshot
 
 
 def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    return df.ta.rsi(length=period)
+    delta = df["Close"].diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    average_gain = gains.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    average_loss = losses.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    relative_strength = average_gain / average_loss
+    return 100 - (100 / (1 + relative_strength))
 
 
 def compute_macd(df: pd.DataFrame) -> pd.DataFrame:
-    return df.ta.macd()
+    close = df["Close"]
+    fast = close.ewm(span=12, adjust=False, min_periods=12).mean()
+    slow = close.ewm(span=26, adjust=False, min_periods=26).mean()
+    macd = fast - slow
+    signal = macd.ewm(span=9, adjust=False, min_periods=9).mean()
+    return pd.DataFrame({
+        "MACD_12_26_9": macd,
+        "MACDh_12_26_9": macd - signal,
+        "MACDs_12_26_9": signal,
+    })
 
 
 def compute_bbands(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
-    return df.ta.bbands(length=period)
+    middle = df["Close"].rolling(window=period, min_periods=period).mean()
+    stddev = df["Close"].rolling(window=period, min_periods=period).std(ddof=0)
+    return pd.DataFrame({
+        f"BBL_{period}_2.0": middle - (2 * stddev),
+        f"BBM_{period}_2.0": middle,
+        f"BBU_{period}_2.0": middle + (2 * stddev),
+    })
 
 
 def compute_sma(df: pd.DataFrame, periods: list[int] | None = None) -> pd.DataFrame:
@@ -23,7 +44,7 @@ def compute_sma(df: pd.DataFrame, periods: list[int] | None = None) -> pd.DataFr
         periods = [50, 200]
     result = pd.DataFrame(index=df.index)
     for p in periods:
-        result[f"SMA_{p}"] = df.ta.sma(length=p)
+        result[f"SMA_{p}"] = df["Close"].rolling(window=p, min_periods=p).mean()
     return result
 
 

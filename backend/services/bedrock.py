@@ -311,6 +311,7 @@ async def chat(
     history: list[dict],
     portfolio_snapshot: dict | None = None,
     session_id: str = "",
+    model_id: str | None = None,
 ) -> str:
     """
     Run one agentic turn. Emits structured logs via LLMLogger (structlog + optional Langfuse).
@@ -319,15 +320,16 @@ async def chat(
 
     messages = list(history) + [{"role": "user", "content": [{"text": message}]}]
     client = _client()
+    selected_model_id = model_id or BEDROCK_MODEL_ID
     total_input_tokens = 0
     total_output_tokens = 0
 
-    async with LLMLogger("bedrock", BEDROCK_MODEL_ID, session_id, message) as trace:
+    async with LLMLogger("bedrock", selected_model_id, session_id, message) as trace:
         while True:
             response = await asyncio.to_thread(
                 functools.partial(
                     client.converse,
-                    modelId=BEDROCK_MODEL_ID,
+                    modelId=selected_model_id,
                     system=[{"text": SYSTEM_PROMPT}],
                     messages=messages,
                     toolConfig={"tools": TOOLS},
