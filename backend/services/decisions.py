@@ -29,8 +29,13 @@ async def record_decision(
     strategy_parsed: Optional[dict] = None,
     simulation_run_id: Optional[str] = None,
     confirmed_by_user: bool = False,
+    commit: bool = True,
 ) -> str:
-    """Persist a Decision row and return its id."""
+    """Persist a Decision row and return its id.
+
+    Pass ``commit=False`` to enlist the row in the caller's unit of work — assisted
+    trades record the portfolio change and its lineage in a single commit.
+    """
     decision_id = str(uuid.uuid4())
     decision = Decision(
         id=decision_id,
@@ -50,5 +55,6 @@ async def record_decision(
         confirmed_by_user=confirmed_by_user,
     )
     db.add(decision)
-    await db.commit()
+    if commit:
+        await db.commit()
     return decision_id

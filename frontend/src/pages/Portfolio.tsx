@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { asPortfolioHandoff, type DecisionContext } from "../api/handoffs";
 import WorkspaceTabs from "../components/WorkspaceTabs";
 import PaperTradeDialog from "../components/PaperTradeDialog";
 import FundingDialog from "../components/FundingDialog";
@@ -15,25 +16,25 @@ const TABS = [
   { to: "/portfolio/activity", label: "Activity" },
 ];
 
-interface ProposalPrefill {
-  prefillAction?: string;
-  prefillSymbol?: string;
-  prefillSizePct?: number;
-}
-
-type TradeRequest = { action: "buy" | "sell"; symbol: string; hint?: string };
+type TradeRequest = {
+  action: "buy" | "sell";
+  symbol: string;
+  hint?: string;
+  decisionContext?: DecisionContext;
+};
 
 // A proposal handoff arrives as router state. It seeds the review dialog only —
-// nothing is submitted until the user confirms.
+// nothing is submitted until the user confirms, and cancelling changes nothing.
 function prefillToTrade(state: unknown): TradeRequest | null {
-  const prefill = state as ProposalPrefill | null;
-  if (!prefill?.prefillAction) return null;
+  const handoff = asPortfolioHandoff(state);
+  if (!handoff) return null;
   return {
-    action: prefill.prefillAction.toUpperCase() === "SELL" ? "sell" : "buy",
-    symbol: prefill.prefillSymbol ?? "",
-    hint: prefill.prefillSizePct
-      ? `The proposal suggested about ${prefill.prefillSizePct.toFixed(1)}% of portfolio value — enter the quantity you want.`
+    action: handoff.prefillAction === "SELL" ? "sell" : "buy",
+    symbol: handoff.prefillSymbol,
+    hint: handoff.prefillSizePct
+      ? `The proposal suggested about ${handoff.prefillSizePct.toFixed(1)}% of portfolio value — enter the quantity you want.`
       : undefined,
+    decisionContext: handoff.decisionContext,
   };
 }
 
@@ -42,11 +43,17 @@ export default function Portfolio({ view }: { view: View }) {
   const navigate = useNavigate();
   const [refreshToken, setRefreshToken] = useState(0);
   const [flash, setFlash] = useState("");
-  const [trade, setTrade] = useState<TradeRequest | null>(() => prefillToTrade(location.state));
+  const [trade, setTrade] = useState<TradeRequest | null>(null);
   const [funding, setFunding] = useState<"deposit" | "withdraw" | null>(null);
 
-  // Clear the consumed handoff so a refresh or Back navigation cannot reopen the dialog.
+  // Consume the handoff here (not in a state initializer) so it also works when the
+  // proposal arrives while Portfolio is already open. Clearing the state afterwards
+  // means a refresh or Back navigation cannot reopen the dialog.
   useEffect(() => {
+    const handoff = prefillToTrade(location.state);
+    // Router state is external input; adopting it into dialog state is the point.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (handoff) setTrade(handoff);
     if (location.state) navigate(location.pathname + location.search, { replace: true, state: null });
   }, [location, navigate]);
 
@@ -78,7 +85,16 @@ export default function Portfolio({ view }: { view: View }) {
       )}
       {view === "activity" && <PortfolioActivity refreshToken={refreshToken} />}
 
-      {trade && <PaperTradeDialog action={trade.action} symbol={trade.symbol} hint={trade.hint} onClose={() => setTrade(null)} onDone={complete} />}
+      {trade && (
+        <PaperTradeDialog
+          action={trade.action}
+          symbol={trade.symbol}
+          hint={trade.hint}
+          decisionContext={trade.decisionContext}
+          onClose={() => setTrade(null)}
+          onDone={complete}
+        />
+      )}
       {funding && <FundingDialog action={funding} onClose={() => setFunding(null)} onDone={complete} />}
     </div>
   );

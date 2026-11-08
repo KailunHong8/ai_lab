@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { apiErrorMessage, deleteDocument, listDocuments } from "../api/client";
+import { useAssistantContext } from "../assistant/useAssistantContext";
 import AddSourceDialog from "../components/AddSourceDialog";
 
 interface Doc {
@@ -35,6 +36,7 @@ export default function ResearchLibrary() {
   const [error, setError] = useState("");
   const [cleanupStatus, setCleanupStatus] = useState<string | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState(false);
+  const { attach, open } = useAssistantContext();
 
   const load = () => {
     listDocuments()
@@ -177,11 +179,27 @@ export default function ResearchLibrary() {
                         {d.date ?? "—"}
                         {d.expiration_at ? ` · exp ${d.expiration_at.slice(0, 10)}` : ""}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            attach({
+                              id: "source",
+                              label: d.title,
+                              value: `${d.title} — ${CORPUS_LABEL[d.corpus ?? ""] ?? d.corpus ?? "unclassified"}, source ${
+                                d.fund || d.source
+                              }, date ${d.date ?? "unknown"}${expired ? " (expired; excluded from recommendation retrieval)" : ""}.`,
+                            });
+                            open();
+                          }}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          Ask AI
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleDelete(d.id)}
-                          className="text-xs text-red-400 hover:text-red-600"
+                          className="ml-3 text-xs text-red-400 hover:text-red-600"
                         >
                           Remove
                         </button>

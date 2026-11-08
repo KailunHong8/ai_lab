@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ingestChatGPT, ingestPerplexity, listOllamaModels, listRouterModels, uploadDocument, apiErrorMessage } from "../api/client";
+import { useMemo, useRef, useState } from "react";
+import { ingestChatGPT, ingestPerplexity, uploadDocument, apiErrorMessage } from "../api/client";
 import { PERPLEXITY_DISABLED } from "../config";
+import { providerSummary } from "../settings/providers";
+import { useProviderSettings } from "../settings/useProviderSettings";
 import Modal from "./Modal";
+import ProviderControls from "./ProviderControls";
 
 type Method = "file" | "text" | "external" | "perplexity";
-type Provider = "router" | "bedrock" | "ollama" | "ollama-cloud";
 type DocumentType = "fund_letter" | "principle_text";
 
-const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
-const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
 const CHATGPT_URL = "https://chatgpt.com";
 
 // Pre-configured deep-research prompts. `{symbol}` is substituted with the ticker.
@@ -55,55 +55,16 @@ export default function AddSourceDialog({ onClose, onIngested }: { onClose: () =
   const [pxQuery, setPxQuery] = useState("");
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
-  const [provider, setProvider] = useState<Provider>("router");
-  const [model, setModel] = useState("");
-  const [routerModels, setRouterModels] = useState<string[]>([]);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+  const providerSettings = useProviderSettings();
+  const { provider, model } = providerSettings;
 
   const fileRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    listRouterModels()
-      .then((data: { models: string[] }) => {
-        setRouterModels(data.models);
-        setModel((prev) => prev || data.models[0] || "");
-      })
-      .catch(() => {});
-    listOllamaModels()
-      .then((data: { models: string[]; available: boolean }) => {
-        setOllamaAvailable(data.available);
-        setOllamaModels(data.models);
-      })
-      .catch(() => {});
-  }, []);
 
   const symbol = ticker.trim().toUpperCase();
   const prompts = useMemo(
     () => PROMPT_TEMPLATES.map((p) => ({ label: p.label, text: p.template.replace(/\{symbol\}/g, symbol || "the stock") })),
     [symbol],
   );
-
-  const providers: { key: Provider; label: string }[] = [
-    { key: "router", label: "AI Router" },
-    { key: "bedrock", label: "Bedrock (legacy)" },
-    { key: "ollama-cloud", label: "Ollama Cloud" },
-    ...(ollamaAvailable ? [{ key: "ollama" as Provider, label: "Ollama" }] : []),
-  ];
-
-  const modelOptions =
-    provider === "router" ? routerModels :
-    provider === "bedrock" ? BEDROCK_MODELS :
-    provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
-    ollamaModels;
-
-  const changeProvider = (next: Provider) => {
-    setProvider(next);
-    if (next === "router") setModel(routerModels[0] ?? "");
-    else if (next === "bedrock") setModel(BEDROCK_MODELS[0]);
-    else if (next === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
-    else setModel(ollamaModels[0] ?? "");
-  };
 
   const finish = (message: string) => {
     setStatus(message);
@@ -395,34 +356,10 @@ export default function AddSourceDialog({ onClose, onIngested }: { onClose: () =
 
           <details className="text-xs">
             <summary className="cursor-pointer text-gray-500">
-              Extraction model: {provider}
-              {model ? ` · ${model}` : ""}
+              Extraction model: {providerSummary(providerSettings)}
             </summary>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <div className="flex overflow-hidden rounded border">
-                {providers.map((p) => (
-                  <button
-                    key={p.key}
-                    type="button"
-                    onClick={() => changeProvider(p.key)}
-                    className={`px-3 py-1 text-xs font-medium ${
-                      provider === p.key ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                aria-label="Extraction model"
-                className="border rounded px-2 py-1 text-xs text-gray-700 bg-white"
-              >
-                {modelOptions.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+            <div className="mt-2">
+              <ProviderControls settings={providerSettings} label="Extraction model" />
             </div>
           </details>
 

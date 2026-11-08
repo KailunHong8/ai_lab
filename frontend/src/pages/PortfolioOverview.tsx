@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getHoldings, getSummary, getTransactions, type Holding, type PortfolioSummary, type TransactionRow } from "../api/client";
+import { useAssistantContext } from "../assistant/useAssistantContext";
 
 export default function PortfolioOverview({ refreshToken }: { refreshToken: number }) {
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [error, setError] = useState("");
+  const { attach, open } = useAssistantContext();
 
   useEffect(() => {
     Promise.all([getSummary(), getHoldings(), getTransactions()])
@@ -18,6 +20,19 @@ export default function PortfolioOverview({ refreshToken }: { refreshToken: numb
       })
       .catch(() => setError("Failed to load portfolio data."));
   }, [refreshToken]);
+
+  // What the user is looking at travels with the next assistant message.
+  useEffect(() => {
+    if (!summary) return;
+    const symbols = holdings.map((h) => h.symbol);
+    attach({
+      id: "portfolio",
+      label: "Paper portfolio",
+      value: `Total value ${money(summary.total_value)}, cash ${money(summary.cash_balance)}, ${
+        holdings.length
+      } open position${holdings.length === 1 ? "" : "s"}${symbols.length ? ` (${symbols.slice(0, 6).join(", ")})` : ""}.`,
+    });
+  }, [summary, holdings, attach]);
 
   if (error) return <p className="text-red-600">{error}</p>;
   if (!summary) return <p className="text-gray-500">Loading…</p>;
@@ -42,6 +57,14 @@ export default function PortfolioOverview({ refreshToken }: { refreshToken: numb
         />
         <Card label="Initial Deposit" value={money(summary.initial_deposit)} />
       </div>
+
+      <button
+        type="button"
+        onClick={open}
+        className="self-start text-sm font-medium text-blue-600 hover:underline"
+      >
+        Ask AI about this portfolio →
+      </button>
 
       <Panel title="Positions" action={{ to: "/portfolio/positions", label: "View all positions" }}>
         {holdings.length === 0 ? (

@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react";
 import { apiErrorMessage, buy, getHoldings, getQuote, getSummary, sell, type Holding } from "../api/client";
+import type { DecisionContext } from "../api/handoffs";
 import Modal from "./Modal";
 
 interface Props {
   action: "buy" | "sell";
   symbol: string;
   hint?: string;
+  // Present only for a trade proposed by the assistant; the server records the
+  // transaction and this lineage in one commit.
+  decisionContext?: DecisionContext;
   onClose: () => void;
   onDone: (message: string) => void;
 }
@@ -13,7 +17,14 @@ interface Props {
 // Two stages on purpose: the review stage exists to show a freshly quoted price,
 // its as-of time, the estimated cost and the cash/position impact before submission.
 // The preview is never authoritative — the server re-quotes and re-checks balances.
-export default function PaperTradeDialog({ action, symbol: initialSymbol, hint, onClose, onDone }: Props) {
+export default function PaperTradeDialog({
+  action,
+  symbol: initialSymbol,
+  hint,
+  decisionContext,
+  onClose,
+  onDone,
+}: Props) {
   const [stage, setStage] = useState<"entry" | "review">("entry");
   const [symbol, setSymbol] = useState(initialSymbol);
   const [sharesText, setSharesText] = useState("");
@@ -69,9 +80,11 @@ export default function PaperTradeDialog({ action, symbol: initialSymbol, hint, 
     setBusy(true);
     setError("");
     try {
-      if (action === "buy") await buy(ticker, shares);
-      else await sell(ticker, shares);
-      onDone(`${action === "buy" ? "Bought" : "Sold"} ${shares} share${shares === 1 ? "" : "s"} of ${ticker} (paper)`);
+      if (action === "buy") await buy(ticker, shares, decisionContext);
+      else await sell(ticker, shares, decisionContext);
+      onDone(
+        `${action === "buy" ? "Bought" : "Sold"} ${shares} share${shares === 1 ? "" : "s"} of ${ticker} (paper)`,
+      );
     } catch (err) {
       setError(apiErrorMessage(err));
       setBusy(false);
@@ -150,6 +163,14 @@ export default function PaperTradeDialog({ action, symbol: initialSymbol, hint, 
         <p className="text-xs text-gray-400">
           These figures are a preview, not a reserved price. The server re-quotes and re-checks
           cash and positions when you confirm.
+        </p>
+      )}
+      {stage === "review" && decisionContext && (
+        <p className="rounded bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          AI-assisted paper trade. Your confirmation is recorded together with{" "}
+          {[decisionContext.provider, decisionContext.model].filter(Boolean).join(" · ") ||
+            "the assistant session"}
+          . A risk check is not a suitability or return guarantee.
         </p>
       )}
       {contextError && <p className="text-xs text-amber-600">{contextError}</p>}

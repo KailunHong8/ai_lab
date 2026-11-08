@@ -38,6 +38,46 @@ async def _get_position(db: AsyncSession, symbol: str) -> Optional[Position]:
     return result.scalar_one_or_none()
 
 
+async def _record_assisted_decision(
+    db: AsyncSession,
+    txn: Transaction,
+    action: str,
+    symbol: str,
+    shares: Decimal,
+    price: Decimal,
+    ctx: Optional["DecisionContext"],
+) -> Optional[str]:
+    """Record lineage for an assisted trade inside the caller's commit.
+
+    A manual trade passes no context and stays manual. An assisted trade whose
+    lineage cannot be written fails the whole request rather than reporting a
+    successful trade with no audit trail.
+    """
+    if ctx is None:
+        return None
+    from backend.services.decisions import record_decision
+
+    await db.flush()  # assign txn.id so the decision can reference it
+    return await record_decision(
+        db,
+        action=action,
+        symbol=symbol,
+        shares=float(shares),
+        price=float(price),
+        transaction_id=txn.id,
+        provider=ctx.provider,
+        model=ctx.model,
+        session_id=ctx.session_id,
+        thesis_ids=ctx.thesis_ids,
+        document_ids=ctx.document_ids,
+        strategy_text=ctx.strategy_text,
+        strategy_parsed=ctx.strategy_parsed,
+        simulation_run_id=ctx.simulation_run_id,
+        confirmed_by_user=True,
+        commit=False,
+    )
+
+
 # ── schemas ───────────────────────────────────────────────────────────────────
 
 class DepositRequest(BaseModel):
@@ -148,35 +188,17 @@ async def buy(req: BuyRequest, db: AsyncSession = Depends(get_db)):
         timestamp=datetime.utcnow(),
     )
     db.add(txn)
+    decision_id = await _record_assisted_decision(db, txn, "BUY", symbol, shares, price, req.decision_context)
+    # One commit for the portfolio change and its required lineage: a failure keeps both out.
     await db.commit()
     await db.refresh(txn)
-
-    if req.decision_context:
-        from backend.services.decisions import record_decision
-        ctx = req.decision_context
-        await record_decision(
-            db,
-            action="BUY",
-            symbol=symbol,
-            shares=float(shares),
-            price=float(price),
-            transaction_id=txn.id,
-            provider=ctx.provider,
-            model=ctx.model,
-            session_id=ctx.session_id,
-            thesis_ids=ctx.thesis_ids,
-            document_ids=ctx.document_ids,
-            strategy_text=ctx.strategy_text,
-            strategy_parsed=ctx.strategy_parsed,
-            simulation_run_id=ctx.simulation_run_id,
-            confirmed_by_user=True,
-        )
 
     return {
         "symbol": symbol,
         "shares": float(position.shares),
         "avg_cost": float(position.avg_cost),
         "cash_balance": float(user.cash_balance),
+        "decision_id": decision_id,
     }
 
 
@@ -214,34 +236,16 @@ async def sell(req: SellRequest, db: AsyncSession = Depends(get_db)):
         timestamp=datetime.utcnow(),
     )
     db.add(txn)
+    decision_id = await _record_assisted_decision(db, txn, "SELL", symbol, shares, price, req.decision_context)
+    # One commit for the portfolio change and its required lineage: a failure keeps both out.
     await db.commit()
     await db.refresh(txn)
-
-    if req.decision_context:
-        from backend.services.decisions import record_decision
-        ctx = req.decision_context
-        await record_decision(
-            db,
-            action="SELL",
-            symbol=symbol,
-            shares=float(shares),
-            price=float(price),
-            transaction_id=txn.id,
-            provider=ctx.provider,
-            model=ctx.model,
-            session_id=ctx.session_id,
-            thesis_ids=ctx.thesis_ids,
-            document_ids=ctx.document_ids,
-            strategy_text=ctx.strategy_text,
-            strategy_parsed=ctx.strategy_parsed,
-            simulation_run_id=ctx.simulation_run_id,
-            confirmed_by_user=True,
-        )
 
     return {
         "symbol": symbol,
         "proceeds": float(proceeds),
         "cash_balance": float(user.cash_balance),
+        "decision_id": decision_id,
     }
 
 

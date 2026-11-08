@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { getQuote, getHistory, searchSymbol } from "../api/client";
+import type { StrategyDraftHandoff } from "../api/handoffs";
+import { useAssistantContext } from "../assistant/useAssistantContext";
 import { searchTickers } from "../data/tickers";
 import {
   ResponsiveContainer,
@@ -53,6 +56,20 @@ export default function Market() {
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  const { attach, open } = useAssistantContext();
+
+  // The loaded company becomes attachable context for the assistant panel.
+  useEffect(() => {
+    if (!quote) return;
+    attach({
+      id: "company",
+      label: quote.symbol,
+      value: `${quote.name} — last quote $${quote.price.toFixed(2)} (${quote.changesPercentage >= 0 ? "+" : ""}${quote.changesPercentage.toFixed(
+        2,
+      )}%).`,
+    });
+  }, [quote, attach]);
 
   // Show static suggestions instantly on every keystroke (no API call)
   useEffect(() => {
@@ -207,6 +224,26 @@ export default function Market() {
             <span>High: ${quote.dayHigh?.toFixed(2)}</span>
             <span>Low: ${quote.dayLow?.toFixed(2)}</span>
             <span>Volume: {quote.volume?.toLocaleString()}</span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-4">
+            <button
+              type="button"
+              onClick={open}
+              className="text-sm font-medium text-blue-600 hover:underline"
+            >
+              Ask AI about {quote.symbol} →
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                navigate("/strategies", {
+                  state: { symbol: quote.symbol, strategy: `Trade ${quote.symbol}: ` } satisfies StrategyDraftHandoff,
+                })
+              }
+              className="text-sm font-medium text-blue-600 hover:underline"
+            >
+              Build a strategy for {quote.symbol} →
+            </button>
           </div>
         </div>
       )}

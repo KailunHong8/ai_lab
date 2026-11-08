@@ -49,12 +49,26 @@ async def _generate_title(message: str) -> str:
         return " ".join(words[:6]) + ("…" if len(words) > 6 else "")
 
 
+class ContextItem(BaseModel):
+    label: str
+    value: str
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str              # must be a valid session UUID from /api/sessions
     provider: str = "router"     # "router" | "bedrock" | "ollama" | "ollama-cloud"
     model: Optional[str] = None
     agent_mode: str = "auto"     # auto = orchestrator routes; advice | research force a specialist
+    context: Optional[list[ContextItem]] = None  # workspace context the user attached in the panel
+
+
+def _context_block(context: Optional[list[ContextItem]]) -> str:
+    """Format attached workspace context so the answer is grounded in what the user sees."""
+    if not context:
+        return ""
+    lines = [f"- {item.label}: {item.value}" for item in context if item.value.strip()]
+    return "\n\nAttached context:\n" + "\n".join(lines) if lines else ""
 
 
 async def _advice_reply(
@@ -172,6 +186,9 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     portfolio = await portfolio_summary(db=db)
 
+    context_text = _context_block(req.context)
+    message = req.message + context_text
+
     # Orchestrator: decide which specialist answers.
     if req.agent_mode in ("advice", "research"):
         intent = req.agent_mode
@@ -180,19 +197,19 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     if intent == "research":
         reply = await _research_reply(
-            req.message, history, req.session_id, req.provider, req.model, db
+            message, history, req.session_id, req.provider, req.model, db
         )
     elif intent == "both":
         findings = await _research_reply(
-            req.message, history, req.session_id, req.provider, req.model, db
+            message, history, req.session_id, req.provider, req.model, db
         )
-        synthesis_input = orchestrator.build_synthesis_input(req.message, findings)
+        synthesis_input = orchestrator.build_synthesis_input(message, findings)
         reply = await _advice_reply(
             synthesis_input, history, portfolio, req.provider, req.model, req.session_id
         )
     else:
         reply = await _advice_reply(
-            req.message, history, portfolio, req.provider, req.model, req.session_id
+            message, history, portfolio, req.provider, req.model, req.session_id
         )
 
     # Auto-title on the very first user message (skip the system-init turn at seq 1-2)
@@ -206,7 +223,7 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     await append_messages(
         session_id=req.session_id,
-        user_content=[{"text": req.message}],
+        user_content=[{"text": req.message}] + ([{"text": context_text}] if context_text else []),
         assistant_content=[{"text": reply}],
         db=db,
     )
@@ -222,6 +239,8 @@ async def list_router_models():
     return {
         "models": await asyncio.to_thread(llm_client.router_models),
         "available": llm_client.router_available(),
+        # Ollama Cloud needs a key on the server; the UI reports it instead of guessing.
+        "ollama_cloud_available": bool(os.getenv("OLLAMA_API_KEY")),
     }
 
 

@@ -126,7 +126,7 @@ export default function ProposalCard({
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-sm font-medium ${rr.approved ? "text-emerald-600" : "text-red-600"}`}>
-            {rr.approved ? "✓ Risk Approved" : "✗ Risk Blocked"}
+            {rr.approved ? "✓ Risk checks passed" : "✗ Risk checks blocked"}
           </span>
           {onDismiss && (
             <button onClick={onDismiss} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
@@ -218,6 +218,9 @@ export default function ProposalCard({
         </Section>
 
         <Section title="Risk Assessment">
+          <p className="text-xs text-gray-500">
+            Deterministic risk checks only — not a suitability, validation, or return guarantee.
+          </p>
           <p className="text-gray-700">{rr.commentary}</p>
           {rr.flags.length > 0 && (
             <ul className="mt-2 space-y-1">

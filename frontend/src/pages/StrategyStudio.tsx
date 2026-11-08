@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   parseToDefinition,
   createStrategy,
@@ -10,11 +10,14 @@ import {
   compileStrategyVersion,
   validateStrategyVersion,
   runStrategyBacktest,
-  listOllamaModels,
-  listRouterModels,
   type StrategyDefinition,
   type ValidationFinding,
 } from "../api/client";
+import { asStrategyHandoff } from "../api/handoffs";
+import { useAssistantContext } from "../assistant/useAssistantContext";
+import ProviderControls from "../components/ProviderControls";
+import { providerSummary } from "../settings/providers";
+import { useProviderSettings } from "../settings/useProviderSettings";
 import {
   ResponsiveContainer,
   LineChart,
@@ -24,18 +27,11 @@ import {
   Tooltip,
   CartesianGrid,
   ReferenceLine,
-  Legend,
   Area,
   ComposedChart,
 } from "recharts";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
-
-type Provider = "router" | "bedrock" | "ollama" | "ollama-cloud";
-
-const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
-const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
-const OLLAMA_LOCAL_MODELS = ["qwen3.5:9b"];
 
 type StudioTab = "draft" | "rules" | "validation" | "versions" | "report";
 
@@ -73,24 +69,22 @@ function StatCard({ label, value }: { label: string; value: string }) {
 
 export default function StrategyStudio() {
   const location = useLocation();
-  const routerState = location.state as {
-    strategy?: string;
-    start_date?: string;
-    end_date?: string;
-  } | null;
-
-  // LLM provider
-  const [provider, setProvider] = useState<Provider>("router");
-  const [model, setModel] = useState<string>("");
-  const [routerModels, setRouterModels] = useState<string[]>([]);
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+  const navigate = useNavigate();
+  // Handoffs carry a selected ticker or a Copilot strategy, never an implied thesis.
+  const routerState = asStrategyHandoff(location.state);
+  const providerSettings = useProviderSettings();
+  const { provider, model } = providerSettings;
+  const { attach, open } = useAssistantContext();
+  const [handoffSymbol, setHandoffSymbol] = useState(routerState?.symbol ?? "");
 
   // Draft form
-  const [description, setDescription] = useState(routerState?.strategy ?? "");
+  const [description, setDescription] = useState(
+    routerState?.strategy ?? (routerState?.symbol ? `Trade ${routerState.symbol}: ` : ""),
+  );
   const [startDate, setStartDate] = useState(routerState?.start_date ?? "2020-01-01");
   const [endDate, setEndDate] = useState(routerState?.end_date ?? "2024-01-01");
   const [strategyName, setStrategyName] = useState("");
-  const [benchmark, setBenchmark] = useState("SPY");
+  const [benchmark, setBenchmark] = useState(routerState?.benchmark ?? "SPY");
 
   // Studio state
   const [activeTab, setActiveTab] = useState<StudioTab>("draft");
@@ -122,39 +116,38 @@ export default function StrategyStudio() {
   const [info, setInfo] = useState("");
 
   useEffect(() => {
-    listOllamaModels()
-      .then((d: any) => setOllamaAvailable(d.available))
-      .catch(() => {});
-
-    listRouterModels()
-      .then((d: { models: string[] }) => {
-        setRouterModels(d.models);
-        setModel((prev) => prev || d.models[0] || "");
-      })
-      .catch(() => {});
-
     refreshStrategyList();
   }, []);
 
-  const handleProviderChange = (p: Provider) => {
-    setProvider(p);
-    if (p === "router") setModel(routerModels[0] ?? "");
-    else if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
-    else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
-    else setModel(OLLAMA_LOCAL_MODELS[0]);
-  };
-
-  const modelOptions =
-    provider === "router" ? routerModels :
-    provider === "bedrock" ? BEDROCK_MODELS :
-    provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
-    OLLAMA_LOCAL_MODELS;
+  // Consume a handoff here so it also works when Strategies is already open. The
+  // router state is cleared afterwards; the draft itself stays editable.
+  useEffect(() => {
+    const handoff = asStrategyHandoff(location.state);
+    if (!handoff) return;
+    // Router state is external input; adopting it into the draft is the point.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setDescription(handoff.strategy);
+    if (handoff.start_date) setStartDate(handoff.start_date);
+    if (handoff.end_date) setEndDate(handoff.end_date);
+    if (handoff.benchmark) setBenchmark(handoff.benchmark);
+    setHandoffSymbol(handoff.symbol ?? "");
+    /* eslint-enable react-hooks/set-state-in-effect */
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location, navigate]);
 
   async function refreshStrategyList() {
     try {
       const data = await listStrategies();
       setStrategyList(data);
     } catch {}
+  }
+
+  function attachStrategyContext(name: string, versionNumber: string, status: string) {
+    attach({
+      id: "strategy",
+      label: name || "Strategy",
+      value: `Saved strategy “${name}”${versionNumber ? ` v${versionNumber}` : ""} (${status || "draft"}). Reviewed status is human review, not validation or paper-trade eligibility.`,
+    });
   }
 
   // ── Parse ──────────────────────────────────────────────────────────────────
@@ -168,7 +161,7 @@ export default function StrategyStudio() {
         start_date: startDate,
         end_date: endDate,
         benchmark,
-        provider: provider === "ollama-cloud" ? "ollama-cloud" : provider,
+        provider,
         model,
       });
       setDefinition(result.definition);
@@ -205,6 +198,7 @@ export default function StrategyStudio() {
       setFindings(result.findings ?? []);
       setIsRunnable(result.is_runnable);
       setInfo(`Strategy saved. ID: ${result.strategy_id} (version 1, draft)`);
+      attachStrategyContext(strategyName, "1", "draft");
       await refreshStrategyList();
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? String(e));
@@ -256,7 +250,7 @@ export default function StrategyStudio() {
     if (!isRunnable) { setError("Cannot promote: blocking errors exist."); return; }
     setError(""); setLoading(true);
     try {
-      const result = await promoteStrategyVersion(strategyId, versionId);
+      await promoteStrategyVersion(strategyId, versionId);
       setVersionStatus("reviewed");
       setInfo("Version promoted to 'reviewed'. It is now immutable.");
     } catch (e: any) {
@@ -328,6 +322,7 @@ export default function StrategyStudio() {
         const compiled = await compileStrategyVersion(sid, latest.id);
         setFindings(compiled.findings ?? []);
         setIsRunnable(compiled.is_runnable);
+        attachStrategyContext(data.name, String(latest.version_number ?? ""), latest.status);
       }
       setStrategyList(await listStrategies());
       setActiveTab("rules");
@@ -354,23 +349,36 @@ export default function StrategyStudio() {
   );
 
   const blockingErrors = findings.filter((f) => f.severity === "error");
-  const warnings = findings.filter((f) => f.severity === "warning");
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Strategies</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Turn a natural-language strategy into a versioned, validated, inspectable daily-bar backtest.
           </p>
+          {handoffSymbol && (
+            <p className="mt-1 inline-block rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+              Draft for {handoffSymbol} handed off from Research. Describe your own rules — no trade is implied.
+            </p>
+          )}
         </div>
-        {strategyId && (
-          <div className="text-xs text-gray-400 text-right">
-            <div>Strategy: <span className="font-mono">{strategyId.slice(0, 8)}…</span></div>
-            {versionId && <div>Version: <span className="font-mono">{versionId.slice(0, 8)}…</span> <span className={`ml-1 px-1.5 py-0.5 rounded text-xs font-semibold ${versionStatus === "reviewed" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>{versionStatus}</span></div>}
-          </div>
-        )}
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={open}
+            className="rounded border border-gray-200 px-3 py-1.5 text-sm text-gray-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+          >
+            Ask AI
+          </button>
+          {strategyId && (
+            <div className="text-xs text-gray-400 text-right">
+              <div>Strategy: <span className="font-mono">{strategyId.slice(0, 8)}…</span></div>
+              {versionId && <div>Version: <span className="font-mono">{versionId.slice(0, 8)}…</span> <span className={`ml-1 px-1.5 py-0.5 rounded text-xs font-semibold ${versionStatus === "reviewed" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>{versionStatus}</span></div>}
+            </div>
+          )}
+        </div>
       </div>
 
       {error && <div className="bg-red-50 border border-red-200 rounded p-3 text-red-700 text-sm">{error}</div>}
@@ -395,31 +403,15 @@ export default function StrategyStudio() {
       {/* ── Draft tab ──────────────────────────────────────────────────────── */}
       {activeTab === "draft" && (
         <div className="space-y-4">
-          {/* LLM provider */}
-          <div className="bg-white border rounded p-4 space-y-3">
-            <h3 className="font-semibold text-gray-700">LLM Provider</h3>
-            <div className="flex gap-2">
-              {(["router", "bedrock", "ollama-cloud", "ollama"] as const).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => handleProviderChange(p)}
-                  disabled={p === "ollama" && !ollamaAvailable}
-                  className={`px-3 py-1.5 text-sm rounded border ${
-                    provider === p ? "bg-blue-600 text-white border-blue-600" : "text-gray-700 border-gray-300 hover:border-blue-400"
-                  } disabled:opacity-40`}
-                >
-                  {p === "router" ? "AI Router" : p === "bedrock" ? "Bedrock (legacy)" : p === "ollama-cloud" ? "Ollama Cloud" : `Ollama Local${!ollamaAvailable ? " (offline)" : ""}`}
-                </button>
-              ))}
+          {/* Model choice stays in shared settings, not in the drafting flow. */}
+          <details className="bg-white border rounded p-4 text-sm">
+            <summary className="cursor-pointer text-gray-500">
+              Model: {providerSummary(providerSettings)}
+            </summary>
+            <div className="mt-2">
+              <ProviderControls settings={providerSettings} label="Strategy parsing model" />
             </div>
-            <select
-              className="border rounded px-2 py-1.5 text-sm w-full max-w-xs"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            >
-              {modelOptions.map((m) => <option key={m}>{m}</option>)}
-            </select>
-          </div>
+          </details>
 
           {/* Description */}
           <div className="bg-white border rounded p-4 space-y-3">

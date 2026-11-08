@@ -188,7 +188,7 @@ export default function Simulation() {
       ? routerState.holdings.map((h) => ({ ticker: h.ticker, weight: String(h.allocation_pct) }))
       : DEFAULT_PORTFOLIO
   );
-  const [agentParseWarnings, setAgentParseWarnings] = useState<string[]>(routerState?.parseWarnings ?? []);
+  const [agentParseWarnings] = useState<string[]>(routerState?.parseWarnings ?? []);
   const [provider, setProvider] = useState<Provider>("router");
   const [model, setModel] = useState<string>("");
   const [routerModels, setRouterModels] = useState<string[]>([]);
@@ -649,7 +649,7 @@ export default function Simulation() {
               result.stress_tests?.length ? ["stress", "Stress Tests"] : null,
               ["rules", "Parsed Rules"],
             ] as ([string, string] | null)[])
-              .filter(Boolean)
+              .filter((tab): tab is [string, string] => tab !== null)
               .map(([key, label]) => (
                 <button
                   key={key}

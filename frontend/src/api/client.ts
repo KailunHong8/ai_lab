@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { DecisionContext } from "./handoffs";
 
 const api = axios.create({ baseURL: "" });
 
@@ -38,11 +39,13 @@ export const deposit = (amount: number) =>
 export const withdraw = (amount: number) =>
   api.post("/api/portfolio/withdraw", { amount }).then((r) => r.data);
 
-export const buy = (symbol: string, shares: number) =>
-  api.post("/api/portfolio/buy", { symbol, shares }).then((r) => r.data);
+// decision_context makes the trade AI-assisted: the server writes the transaction
+// and its lineage in one commit, or neither.
+export const buy = (symbol: string, shares: number, decisionContext?: DecisionContext) =>
+  api.post("/api/portfolio/buy", { symbol, shares, decision_context: decisionContext ?? null }).then((r) => r.data);
 
-export const sell = (symbol: string, shares: number) =>
-  api.post("/api/portfolio/sell", { symbol, shares }).then((r) => r.data);
+export const sell = (symbol: string, shares: number, decisionContext?: DecisionContext) =>
+  api.post("/api/portfolio/sell", { symbol, shares, decision_context: decisionContext ?? null }).then((r) => r.data);
 
 export const listDecisions = (limit = 1000) =>
   api.get("/api/portfolio/decisions", { params: { limit } }).then((r) => r.data);
@@ -85,6 +88,11 @@ export interface DecisionRow {
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
+export interface AssistantContextItem {
+  label: string;
+  value: string;
+}
+
 export const agentChat = (
   message: string,
   session_id: string,
@@ -92,9 +100,14 @@ export const agentChat = (
   model?: string,
   signal?: AbortSignal,
   agent_mode = "auto",
+  context?: AssistantContextItem[],
 ) =>
   api
-    .post("/api/agent/chat", { message, session_id, provider, model: model || null, agent_mode }, { signal })
+    .post(
+      "/api/agent/chat",
+      { message, session_id, provider, model: model || null, agent_mode, context: context ?? null },
+      { signal },
+    )
     .then((r) => r.data);
 
 export const multiRun = (payload: {
@@ -107,7 +120,9 @@ export const multiRun = (payload: {
 }) => api.post("/api/agent/multi-run", payload, { responseType: "stream" });
 
 export const listRouterModels = () =>
-  api.get("/api/agent/router-models").then((r) => r.data);
+  api
+    .get<{ models: string[]; available: boolean; ollama_cloud_available: boolean }>("/api/agent/router-models")
+    .then((r) => r.data);
 
 export const listProposals = (symbol?: string) =>
   api.get("/api/agent/proposals", { params: symbol ? { symbol } : {} }).then((r) => r.data);
