@@ -11,31 +11,22 @@ import re
 async def complete(
     system: str,
     user: str,
-    provider: str = "bedrock",
+    provider: str = "router",
     model: str | None = None,
 ) -> str:
     """Single completion (no tool use). Returns the assistant text."""
-    if provider == "bedrock":
-        return await _bedrock_complete(system, user, model)
-    elif provider in ("ollama", "ollama-cloud"):
+    if provider in ("ollama", "ollama-cloud"):
         return await _ollama_complete(system, user, provider, model)
-    else:
-        return await _bedrock_complete(system, user, model)
+    return await _hosted_complete(system, user, provider, model)
 
 
-async def _bedrock_complete(system: str, user: str, model: str | None) -> str:
-    import boto3
-    from botocore.config import Config
-
-    region = os.getenv("BEDROCK_REGION", "eu-west-1")
-    model_id = model or os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-    aws_profile = os.getenv("AWS_PROFILE") or None
+async def _hosted_complete(system: str, user: str, provider: str, model: str | None) -> str:
+    from backend.services.llm_client import complete_sync
 
     def _call():
-        session = boto3.Session(profile_name=aws_profile)
-        client = session.client("bedrock-runtime", region_name=region, config=Config(read_timeout=300))
-        resp = client.converse(
-            modelId=model_id,
+        resp = complete_sync(
+            provider,
+            model,
             system=[{"text": system}],
             messages=[{"role": "user", "content": [{"text": user}]}],
         )

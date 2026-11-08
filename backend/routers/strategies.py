@@ -56,7 +56,7 @@ class ParseRequest(BaseModel):
     start_date: str
     end_date: str
     benchmark: str = "SPY"
-    provider: str = "bedrock"
+    provider: str = "router"
     model: Optional[str] = None
     commission_bps: float = 2.0
     slippage_bps: float = 5.0

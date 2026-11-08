@@ -18,7 +18,7 @@ from backend.db import get_db
 from backend.models import ChatSession, ChatMessage
 from backend.routers.portfolio import summary as portfolio_summary
 from backend.routers.sessions import append_messages
-from backend.services import bedrock
+from backend.services import llm_client
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -30,17 +30,15 @@ _TITLE_SYSTEM = (
 
 
 async def _generate_title(message: str) -> str:
-    """Generate a short session title via Bedrock (fast, fire-and-forget on error)."""
+    """Generate a short session title via the hosted LLM (fast, fire-and-forget on error)."""
     try:
-        import boto3
-        from botocore.config import Config
-        region = os.getenv("BEDROCK_REGION", "eu-west-1")
-        model_id = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-        client = boto3.client("bedrock-runtime", region_name=region, config=Config(read_timeout=30))
+        from backend.services.llm_client import complete_sync
+
         resp = await asyncio.to_thread(
             functools.partial(
-                client.converse,
-                modelId=model_id,
+                complete_sync,
+                "router",
+                None,
                 system=[{"text": _TITLE_SYSTEM}],
                 messages=[{"role": "user", "content": [{"text": message}]}],
             )
@@ -54,7 +52,7 @@ async def _generate_title(message: str) -> str:
 class ChatRequest(BaseModel):
     message: str
     session_id: str              # must be a valid session UUID from /api/sessions
-    provider: str = "bedrock"
+    provider: str = "router"     # "router" | "bedrock" | "ollama" | "ollama-cloud"
     model: Optional[str] = None
     agent_mode: str = "auto"     # auto = orchestrator routes; advice | research force a specialist
 
@@ -95,12 +93,13 @@ async def _advice_reply(
         )
     else:
         try:
-            return await bedrock.chat(
+            return await llm_client.chat(
                 message=message,
                 history=history,
                 portfolio_snapshot=portfolio,
                 session_id=session_id,
                 model_id=model,
+                provider=provider,
             )
         except UnauthorizedSSOTokenError as exc:
             raise HTTPException(
@@ -215,13 +214,24 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     return {"reply": reply, "session_id": req.session_id, "session_name": session.name, "intent": intent}
 
 
+# ── Providers ──────────────────────────────────────────────────────────────────
+
+@router.get("/router-models")
+async def list_router_models():
+    """Model ids served by the AI Model Router catalog, for the model selector."""
+    return {
+        "models": await asyncio.to_thread(llm_client.router_models),
+        "available": llm_client.router_available(),
+    }
+
+
 # ── Multi-agent run ────────────────────────────────────────────────────────────
 
 class MultiRunRequest(BaseModel):
     symbol: str
     analysis_date: Optional[str] = None    # defaults to today
     session_id: str = ""
-    provider: str = "bedrock"
+    provider: str = "router"
     model: Optional[str] = None
     debate_rounds: int = 1
 

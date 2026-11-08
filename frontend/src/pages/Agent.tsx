@@ -9,6 +9,7 @@ import {
   deleteSession,
   renameSession,
   listOllamaModels,
+  listRouterModels,
   parseStrategy,
 } from "../api/client";
 import { PERPLEXITY_DISABLED } from "../config";
@@ -37,6 +38,8 @@ interface Session {
   updated_at: string;
 }
 
+type Provider = "router" | "bedrock" | "ollama" | "ollama-cloud";
+
 const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
 const OLLAMA_LOCAL_MODELS = ["qwen3.5:9b"];
 const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
@@ -57,8 +60,9 @@ export default function Agent() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
-  const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
+  const [provider, setProvider] = useState<Provider>("router");
+  const [model, setModel] = useState<string>("");
+  const [routerModels, setRouterModels] = useState<string[]>([]);
   const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -83,6 +87,13 @@ export default function Agent() {
       })
       .catch(() => {});
 
+    listRouterModels()
+      .then((data: { models: string[] }) => {
+        setRouterModels(data.models);
+        setModel((prev) => prev || data.models[0] || "");
+      })
+      .catch(() => {});
+
     refreshSessions();
   }, []);
 
@@ -91,9 +102,10 @@ export default function Agent() {
       .then((d: { sessions: Session[] }) => setSessions(d.sessions))
       .catch(() => {});
 
-  const handleProviderChange = (p: "bedrock" | "ollama" | "ollama-cloud") => {
+  const handleProviderChange = (p: Provider) => {
     setProvider(p);
-    if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    if (p === "router") setModel(routerModels[0] ?? "");
+    else if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
     else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
     else setModel(OLLAMA_LOCAL_MODELS[0]);
   };
@@ -109,8 +121,13 @@ export default function Agent() {
         text: m.content.map((c) => c.text || "").join(""),
       }));
       setMessages(mapped);
-      if (data.provider) setProvider(data.provider);
-      if (data.model) setModel(data.model);
+      const nextProvider = (data.provider as Provider) || provider;
+      setProvider(nextProvider);
+      if (data.model) {
+        // A model retired from the router catalog can't be restored — fall back to the default.
+        const retired = nextProvider === "router" && routerModels.length > 0 && !routerModels.includes(data.model);
+        setModel(retired ? routerModels[0] : data.model);
+      }
     } catch {}
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
   };
@@ -249,6 +266,7 @@ export default function Agent() {
   };
 
   const modelOptions =
+    provider === "router" ? routerModels :
     provider === "bedrock" ? BEDROCK_MODELS :
     provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
     OLLAMA_LOCAL_MODELS;
@@ -431,7 +449,7 @@ export default function Agent() {
             </div>
             <span className="text-gray-500">Backend:</span>
             <div className="flex rounded border overflow-hidden">
-              {(["bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
+              {(["router", "bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
@@ -441,7 +459,8 @@ export default function Agent() {
                       : "bg-white text-gray-600 hover:bg-gray-50"
                   }`}
                 >
-                  {p === "bedrock" ? "Bedrock" :
+                  {p === "router" ? "AI Router" :
+                   p === "bedrock" ? "Bedrock (legacy)" :
                    p === "ollama-cloud" ? "Ollama Cloud" :
                    `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
                 </button>

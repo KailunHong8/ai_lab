@@ -15,7 +15,7 @@ import uuid
 
 import httpx
 
-from backend.services.bedrock import TOOLS, SYSTEM_PROMPT, _dispatch_tool
+from backend.services.llm_client import TOOLS, SYSTEM_PROMPT, _dispatch_tool
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:9b")
@@ -104,7 +104,7 @@ async def chat(
     """
     Agentic chat turn via Ollama (local or cloud).
     Pass host=OLLAMA_CLOUD_HOST and api_key=OLLAMA_API_KEY for cloud.
-    Reuses the same TOOLS list and _dispatch_tool from bedrock.py.
+    Reuses the same TOOLS list and _dispatch_tool from llm_client.py.
     """
     from backend.services.llm_logger import LLMLogger
 

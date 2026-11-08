@@ -11,6 +11,7 @@ import {
   validateStrategyVersion,
   runStrategyBacktest,
   listOllamaModels,
+  listRouterModels,
   type StrategyDefinition,
   type ValidationFinding,
 } from "../api/client";
@@ -29,6 +30,8 @@ import {
 } from "recharts";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
+
+type Provider = "router" | "bedrock" | "ollama" | "ollama-cloud";
 
 const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
 const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
@@ -77,8 +80,9 @@ export default function StrategyStudio() {
   } | null;
 
   // LLM provider
-  const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
-  const [model, setModel] = useState(BEDROCK_MODELS[0]);
+  const [provider, setProvider] = useState<Provider>("router");
+  const [model, setModel] = useState<string>("");
+  const [routerModels, setRouterModels] = useState<string[]>([]);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
 
   // Draft form
@@ -121,17 +125,27 @@ export default function StrategyStudio() {
     listOllamaModels()
       .then((d: any) => setOllamaAvailable(d.available))
       .catch(() => {});
+
+    listRouterModels()
+      .then((d: { models: string[] }) => {
+        setRouterModels(d.models);
+        setModel((prev) => prev || d.models[0] || "");
+      })
+      .catch(() => {});
+
     refreshStrategyList();
   }, []);
 
-  const handleProviderChange = (p: "bedrock" | "ollama" | "ollama-cloud") => {
+  const handleProviderChange = (p: Provider) => {
     setProvider(p);
-    if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    if (p === "router") setModel(routerModels[0] ?? "");
+    else if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
     else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
     else setModel(OLLAMA_LOCAL_MODELS[0]);
   };
 
   const modelOptions =
+    provider === "router" ? routerModels :
     provider === "bedrock" ? BEDROCK_MODELS :
     provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
     OLLAMA_LOCAL_MODELS;
@@ -346,7 +360,7 @@ export default function StrategyStudio() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Strategy Studio</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Strategies</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Turn a natural-language strategy into a versioned, validated, inspectable daily-bar backtest.
           </p>
@@ -385,7 +399,7 @@ export default function StrategyStudio() {
           <div className="bg-white border rounded p-4 space-y-3">
             <h3 className="font-semibold text-gray-700">LLM Provider</h3>
             <div className="flex gap-2">
-              {(["bedrock", "ollama-cloud", "ollama"] as const).map((p) => (
+              {(["router", "bedrock", "ollama-cloud", "ollama"] as const).map((p) => (
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
@@ -394,7 +408,7 @@ export default function StrategyStudio() {
                     provider === p ? "bg-blue-600 text-white border-blue-600" : "text-gray-700 border-gray-300 hover:border-blue-400"
                   } disabled:opacity-40`}
                 >
-                  {p === "bedrock" ? "AWS Bedrock" : p === "ollama-cloud" ? "Ollama Cloud" : `Ollama Local${!ollamaAvailable ? " (offline)" : ""}`}
+                  {p === "router" ? "AI Router" : p === "bedrock" ? "Bedrock (legacy)" : p === "ollama-cloud" ? "Ollama Cloud" : `Ollama Local${!ollamaAvailable ? " (offline)" : ""}`}
                 </button>
               ))}
             </div>

@@ -1,8 +1,9 @@
-"""Unified market data client — yfinance primary, Finnhub supplement, SQLite cache."""
+"""Unified market data client — yfinance primary, FMP fallback, Finnhub supplement, SQLite cache."""
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
@@ -12,6 +13,8 @@ import yfinance as yf
 from backend.services.types import (
     Quote, CompanyProfile, Fundamentals, NewsItem, SentimentScore,
 )
+
+logger = logging.getLogger(__name__)
 
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 
@@ -80,7 +83,28 @@ async def get_quote(symbol: str) -> Quote:
             "day_low": float(full.get("dayLow") or 0) or None,
         }
 
-    data = await asyncio.to_thread(_fetch)
+    try:
+        data = await asyncio.to_thread(_fetch)
+        if not data["price"]:
+            raise ValueError("Yahoo Finance returned no quote price")
+    except Exception as exc:
+        logger.warning("Yahoo quote lookup failed for %s; trying FMP", symbol, exc_info=True)
+        from backend.services import fmp
+        raw = await fmp.get_quote(symbol)
+        if not raw or not raw.get("price"):
+            raise RuntimeError(f"Could not retrieve a quote for {symbol} from Yahoo Finance or FMP.") from exc
+        data = {
+            "symbol": raw.get("symbol", symbol),
+            "name": raw.get("name") or raw.get("shortName", ""),
+            "price": raw["price"],
+            "change_pct": raw.get("changesPercentage") or 0,
+            "volume": raw.get("volume") or raw.get("regularMarketVolume"),
+            "market_cap": raw.get("marketCap"),
+            "open": raw.get("open") or raw.get("regularMarketOpen"),
+            "day_high": raw.get("dayHigh") or raw.get("regularMarketDayHigh"),
+            "day_low": raw.get("dayLow") or raw.get("regularMarketDayLow"),
+        }
+
     await _cache_set(key, data, _TTL["quote"])
     return Quote(**data)
 
@@ -101,7 +125,24 @@ async def get_profile(symbol: str) -> CompanyProfile:
             "description": info.get("longBusinessSummary", ""),
         }
 
-    data = await asyncio.to_thread(_fetch)
+    try:
+        data = await asyncio.to_thread(_fetch)
+        if not data["name"]:
+            raise ValueError("Yahoo Finance returned no company profile")
+    except Exception as exc:
+        logger.warning("Yahoo profile lookup failed for %s; trying FMP", symbol, exc_info=True)
+        from backend.services import fmp
+        raw = await fmp.get_profile(symbol)
+        if not raw:
+            raise RuntimeError(f"Could not retrieve a profile for {symbol} from Yahoo Finance or FMP.") from exc
+        data = {
+            "symbol": raw.get("symbol", symbol),
+            "name": raw.get("companyName") or raw.get("longName") or raw.get("shortName", ""),
+            "sector": raw.get("sector", ""),
+            "industry": raw.get("industry", ""),
+            "description": raw.get("description") or raw.get("longBusinessSummary", ""),
+        }
+
     await _cache_set(key, data, _TTL["profile"])
     return CompanyProfile(**data)
 
@@ -165,7 +206,34 @@ async def get_fundamentals(symbol: str) -> Fundamentals:
             "balance_trend": balance_trend,
         }
 
-    data = await asyncio.to_thread(_fetch)
+    try:
+        data = await asyncio.to_thread(_fetch)
+        if not any(data.get(field) is not None for field in (
+            "pe_ratio", "eps", "revenue_ttm", "gross_margin", "debt_equity", "roe",
+        )):
+            raise ValueError("Yahoo Finance returned no fundamental data")
+    except Exception as exc:
+        logger.warning("Yahoo fundamentals lookup failed for %s; trying FMP ratios", symbol, exc_info=True)
+        from backend.services import fmp
+        ratios = await fmp.get_ratios(symbol)
+        if not ratios:
+            raise RuntimeError(f"Could not retrieve fundamentals for {symbol} from Yahoo Finance or FMP.") from exc
+
+        debt_equity = ratios.get("debtEquityRatio")
+        if debt_equity is not None and abs(debt_equity) > 20:
+            debt_equity /= 100.0
+
+        def _fraction(value):
+            return value / 100.0 if value is not None and abs(value) > 1 else value
+
+        data = {
+            "symbol": symbol,
+            "pe_ratio": ratios.get("priceEarningsRatio"),
+            "gross_margin": _fraction(ratios.get("grossProfitMargin")),
+            "debt_equity": debt_equity,
+            "roe": _fraction(ratios.get("returnOnEquity")),
+        }
+
     await _cache_set(key, data, _TTL["fundamentals"])
     return Fundamentals(**data)
 
@@ -179,7 +247,29 @@ async def get_price_history(symbol: str, period: str = "1y"):
         df = ticker.history(period=period, auto_adjust=True)
         return df
 
-    return await asyncio.to_thread(_fetch)
+    try:
+        df = await asyncio.to_thread(_fetch)
+        if df.empty:
+            raise ValueError("Yahoo Finance returned no price history")
+        return df
+    except Exception as exc:
+        logger.warning("Yahoo history lookup failed for %s; trying FMP", symbol, exc_info=True)
+        from backend.services import fmp
+        to_date = datetime.utcnow().date()
+        from_date = to_date - timedelta(days=366)
+        raw = await fmp.get_history(symbol, from_date.isoformat(), to_date.isoformat())
+        if not raw:
+            raise RuntimeError(f"Could not retrieve price history for {symbol} from Yahoo Finance or FMP.") from exc
+        df = pd.DataFrame(raw)
+        df["Date"] = pd.to_datetime(df["date"])
+        df = df.rename(columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        })
+        return df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]]
 
 
 async def get_news(symbol: str, limit: int = 30) -> list[NewsItem]:
@@ -206,7 +296,11 @@ async def get_news(symbol: str, limit: int = 30) -> list[NewsItem]:
             })
         return result
 
-    items = await asyncio.to_thread(_yf_news)
+    try:
+        items = await asyncio.to_thread(_yf_news)
+    except Exception:
+        logger.exception("Yahoo news lookup failed for %s; trying Finnhub if configured", symbol)
+        items = []
 
     # Finnhub supplement
     if FINNHUB_KEY and len(items) < limit:

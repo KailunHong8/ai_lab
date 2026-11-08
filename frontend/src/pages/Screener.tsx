@@ -121,7 +121,7 @@ export default function Screener() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Value Screener</h1>
+      <h1 className="text-2xl font-bold">Discover</h1>
       <p className="text-sm text-gray-500">
         Screens stocks using Buffett/Brealey/Munger criteria, then enriches passing
         stocks with fund research theses and investing insights.

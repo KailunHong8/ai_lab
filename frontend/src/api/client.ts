@@ -2,6 +2,13 @@ import axios from "axios";
 
 const api = axios.create({ baseURL: "" });
 
+// FastAPI errors arrive as { detail: "..." }; fall back to the network message.
+export const apiErrorMessage = (err: unknown): string => {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  return err instanceof Error ? err.message : "Request failed";
+};
+
 // ── Market ────────────────────────────────────────────────────────────────────
 export const getQuote = (symbol: string) =>
   api.get(`/api/market/quote/${symbol}`).then((r) => r.data);
@@ -37,11 +44,51 @@ export const buy = (symbol: string, shares: number) =>
 export const sell = (symbol: string, shares: number) =>
   api.post("/api/portfolio/sell", { symbol, shares }).then((r) => r.data);
 
+export const listDecisions = (limit = 1000) =>
+  api.get("/api/portfolio/decisions", { params: { limit } }).then((r) => r.data);
+
+export interface PortfolioSummary {
+  cash_balance: number;
+  equity_value: number;
+  total_value: number;
+  initial_deposit: number;
+  pnl: number;
+  pnl_pct: number;
+}
+
+export interface Holding {
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  current_price: number;
+  market_value: number;
+  unrealised_pnl: number;
+}
+
+export interface TransactionRow {
+  id: number;
+  symbol: string | null;
+  type: string;
+  shares: number | null;
+  price: number | null;
+  amount: number;
+  timestamp: string;
+}
+
+export interface DecisionRow {
+  id: number;
+  action: string;
+  symbol: string;
+  transaction_id: number | null;
+  provider: string | null;
+  model: string | null;
+}
+
 // ── Agent ─────────────────────────────────────────────────────────────────────
 export const agentChat = (
   message: string,
   session_id: string,
-  provider = "bedrock",
+  provider = "router",
   model?: string,
   signal?: AbortSignal,
   agent_mode = "auto",
@@ -59,6 +106,9 @@ export const multiRun = (payload: {
   debate_rounds?: number;
 }) => api.post("/api/agent/multi-run", payload, { responseType: "stream" });
 
+export const listRouterModels = () =>
+  api.get("/api/agent/router-models").then((r) => r.data);
+
 export const listProposals = (symbol?: string) =>
   api.get("/api/agent/proposals", { params: symbol ? { symbol } : {} }).then((r) => r.data);
 
@@ -66,7 +116,7 @@ export const listProposals = (symbol?: string) =>
 export const listSessions = () =>
   api.get("/api/sessions").then((r) => r.data);
 
-export const createSession = (name?: string, provider = "bedrock", model?: string) =>
+export const createSession = (name?: string, provider = "router", model?: string) =>
   api.post("/api/sessions", { name, provider, model }).then((r) => r.data);
 
 export const getSessionMessages = (session_id: string) =>

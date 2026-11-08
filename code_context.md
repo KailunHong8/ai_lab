@@ -28,8 +28,8 @@ AI_lab_standalone/
 │   │   ├── simulation.py        # Backtest: rule-based + Monte Carlo + walk-forward + stress tests
 │   │   └── sessions.py          # Persistent named copilot sessions
 │   └── services/
-│       ├── bedrock.py           # AWS Bedrock agentic chat (tool-use loop)
-│       ├── ollama_client.py     # Ollama local LLM (same tool interface as Bedrock)
+│       ├── llm_client.py        # Hosted LLM agentic chat (AI Model Router, Bedrock fallback)
+│       ├── ollama_client.py     # Ollama local LLM (same tool interface as the hosted client)
 │       ├── orchestrator.py      # Auto-mode intent classification
 │       ├── perplexity_client.py # Web-research provider client
 │       ├── research.py          # Principles retrieval over investing_research/
@@ -39,17 +39,20 @@ AI_lab_standalone/
 │       ├── fmp.py               # FMP API client with TTL caching + Yahoo fallback
 │       └── yahoo.py             # Yahoo Finance connector (fallback)
 ├── frontend/src/
-│   ├── App.tsx                  # Routes
+│   ├── App.tsx                  # Routes (3 workspaces + legacy aliases)
 │   ├── components/Layout.tsx    # Nav bar
 │   ├── pages/
+│   │   ├── Portfolio.tsx        # Workspace shell: overview / positions / activity
+│   │   ├── PortfolioOverview.tsx
+│   │   ├── PortfolioPositions.tsx
+│   │   ├── PortfolioActivity.tsx
+│   │   ├── Research.tsx         # Workspace shell: library / company / discover
+│   │   ├── ResearchLibrary.tsx  # Library list + Add source dialog
+│   │   ├── Market.tsx           # Research → Company view
+│   │   ├── Screener.tsx         # Research → Discover view
+│   │   ├── StrategyStudio.tsx   # Strategies
 │   │   ├── Agent.tsx            # Chat copilot with provider/model selector
-│   │   ├── Research.tsx         # Document upload with provider/model selector
-│   │   ├── Screener.tsx         # Value screener UI
-│   │   ├── Simulation.tsx       # Strategy sim: equity curve, Monte Carlo, walk-forward, stress tests
-│   │   ├── Dashboard.tsx
-│   │   ├── Holdings.tsx
-│   │   ├── Transactions.tsx
-│   │   └── Market.tsx
+│   │   └── Simulation.tsx       # Legacy strategy sim (equity curve, Monte Carlo, …)
 │   └── api/client.ts            # Axios wrappers for all endpoints
 ├── investing_research/          # PDF/MD books (Brealey, Shiller, Munger)
 ├── knowledge_base/documents/    # Parsed research docs (markdown)
@@ -116,12 +119,15 @@ Primary market data source. All endpoints use `/stable/` base URL.
 
 ## AI Provider Pattern
 
-The agent supports Bedrock, local Ollama, and Ollama Cloud. `orchestrator.py` selects
-advice or Perplexity-backed research in automatic mode. The agent's common tools cover
+The agent supports the AI Model Router (default), Bedrock (legacy fallback), local
+Ollama, and Ollama Cloud. `orchestrator.py` selects advice or Perplexity-backed research
+in automatic mode. The agent's common tools cover
 quotes, the paper portfolio, theses, entity relationships, screener history, principles,
 and market-opinion retrieval.
 
-`bedrock.py` and `ollama_client.py` share tool dispatch. The system prompt instructs
+`llm_client.py` and `ollama_client.py` share tool dispatch. `llm_client.resolve(provider, model)`
+maps a requested provider onto the backend actually used: the router when
+`AI_MODEL_ROUTER_API_KEY` is set, otherwise Bedrock. The system prompt instructs
 the agent to reason from principles first, fund opinions second, and time-sensitive web
 context last; it must label sources and distinguish facts from forecasts.
 
@@ -158,7 +164,11 @@ The simulation router computes:
 | Variable | Default | Purpose |
 |---|---|---|
 | `FMP_API_KEY` | — | FMP market data |
-| `BEDROCK_REGION` | `eu-west-1` | AWS region for Bedrock |
+| `AI_MODEL_ROUTER_BASE_URL` | HF router URL | AI Model Router endpoint |
+| `AI_MODEL_ROUTER_API_KEY` | — | Enables the router; when unset, calls fall back to Bedrock |
+| `AI_MODEL_ROUTER_MODEL` | `Fast` | Default router model (tier alias from the catalog) |
+| `AI_MODEL_ROUTER_MAX_TOKENS` | `8192` | Max output tokens on the router |
+| `BEDROCK_REGION` | `eu-west-1` | AWS region for the Bedrock fallback |
 | `BEDROCK_MODEL_ID` | `eu.anthropic.claude-sonnet-4-6` | Bedrock model |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `qwen2.5:9b` | Default Ollama model |

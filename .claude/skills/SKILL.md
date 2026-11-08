@@ -27,7 +27,7 @@ project's backend services:
 - **Fallback data source**: yfinance — automatically used when FMP returns 402/403
   (free-tier restriction) or when FMP returns empty data.
 - **No MCP connector** — all data flows through the FastAPI backend at `http://localhost:8000`
-  or via the 6 AI copilot tools registered in `backend/services/bedrock.py`.
+  or via the 6 AI copilot tools registered in `backend/services/llm_client.py`.
 - **No intraday data** on the free FMP tier — see the coverage caveat section below.
 
 **AI copilot tools available** (call these in the agent loop):

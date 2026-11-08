@@ -98,7 +98,7 @@ async def upload_document(
     file: Optional[UploadFile] = File(None),
     text: Optional[str] = Form(None),
     document_type: Optional[str] = Form("auto"),
-    provider: str = Form("bedrock"),
+    provider: str = Form("router"),
     model: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
@@ -273,7 +273,7 @@ async def ingest_research_result(
     content: str,
     citations: list[dict],
     db: AsyncSession,
-    provider: str = "bedrock",
+    provider: str = "router",
     model: Optional[str] = None,
     source: str = "perplexity",
     channel: str = CHANNEL_PERPLEXITY,
@@ -371,7 +371,7 @@ async def ingest_research_result(
 @router.post("/ingest-perplexity")
 async def ingest_perplexity(
     req: PerplexityIngestRequest,
-    provider: str = "bedrock",
+    provider: str = "router",
     model: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -428,7 +428,7 @@ def _extract_citations(text: str) -> list[dict]:
 @router.post("/ingest-chatgpt")
 async def ingest_chatgpt(
     req: ChatGPTIngestRequest,
-    provider: str = "bedrock",
+    provider: str = "router",
     model: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -464,7 +464,7 @@ async def ingest_chatgpt(
 
 
 async def _generate_tags(
-    query: str, content: str, citations: list[dict], provider: str = "bedrock", model: Optional[str] = None
+    query: str, content: str, citations: list[dict], provider: str = "router", model: Optional[str] = None
 ) -> list[str]:
     """Ask the LLM to generate 3–7 short topic tags from query + content excerpt."""
     excerpt = content[:2000]
@@ -486,14 +486,14 @@ async def _generate_tags(
                 return [str(t) for t in raw]
             return []
         else:
-            import asyncio, functools, boto3, os
-            region = os.getenv("BEDROCK_REGION", "eu-west-1")
-            model_id = model or os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-            client = boto3.client("bedrock-runtime", region_name=region)
+            import asyncio, functools
+            from backend.services.llm_client import complete_sync
+
             response = await asyncio.to_thread(
                 functools.partial(
-                    client.converse,
-                    modelId=model_id,
+                    complete_sync,
+                    provider,
+                    model,
                     messages=[{"role": "user", "content": [{"text": prompt}]}],
                 )
             )

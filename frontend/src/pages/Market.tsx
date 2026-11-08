@@ -151,7 +151,7 @@ export default function Market() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Market</h1>
+      <h1 className="text-2xl font-bold mb-6">Company</h1>
 
       <div ref={wrapperRef} className="relative max-w-sm mb-6">
         <form onSubmit={handleSubmit} className="flex gap-2">

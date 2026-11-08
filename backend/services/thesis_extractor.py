@@ -54,20 +54,16 @@ If the document contains no clear investment theses or relationships, return {"t
 """
 
 
-def _call_bedrock(content: str) -> dict[str, Any]:
-    """Synchronous Bedrock call — wrapped in asyncio.to_thread by caller."""
-    import boto3
-    import os
-
-    region = os.getenv("BEDROCK_REGION", "eu-west-1")
-    model_id = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-    client = boto3.client("bedrock-runtime", region_name=region)
+def _call_llm(content: str, provider: str, model: str | None) -> dict[str, Any]:
+    """Synchronous hosted-LLM call — wrapped in asyncio.to_thread by caller."""
+    from backend.services.llm_client import complete_sync
 
     # Truncate very long documents to stay within context limits
     truncated = content[:12000] if len(content) > 12000 else content
 
-    response = client.converse(
-        modelId=model_id,
+    response = complete_sync(
+        provider,
+        model,
         system=[{"text": EXTRACTION_PROMPT}],
         messages=[{"role": "user", "content": [{"text": truncated}]}],
     )
@@ -94,7 +90,7 @@ async def extract_and_save(
     document_id: str,
     content: str,
     db: AsyncSession,
-    provider: str = "bedrock",
+    provider: str = "router",
     model: str | None = None,
 ) -> dict:
     """
@@ -114,7 +110,7 @@ async def extract_and_save(
             _model = model or ollama_client.OLLAMA_DEFAULT_MODEL
             extracted = await ollama_client.extract_json(content, EXTRACTION_PROMPT, model=_model)
     else:
-        extracted = await asyncio.to_thread(_call_bedrock, content)
+        extracted = await asyncio.to_thread(_call_llm, content, provider, model)
 
     # Fetch source from document record
     doc_row = await db.execute(select(Document).where(Document.id == document_id))

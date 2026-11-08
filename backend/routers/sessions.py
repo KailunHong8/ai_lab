@@ -85,7 +85,7 @@ Always structure responses using these sections where applicable:
 
 class CreateSessionRequest(BaseModel):
     name: Optional[str] = None
-    provider: str = "bedrock"
+    provider: str = "router"
     model: Optional[str] = None
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { runSimulation, runPortfolioSimulation, parseStrategy, listOllamaModels } from "../api/client";
+import { runSimulation, runPortfolioSimulation, parseStrategy, listOllamaModels, listRouterModels } from "../api/client";
 import {
   ResponsiveContainer,
   LineChart,
@@ -109,6 +109,8 @@ interface Holding {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+type Provider = "router" | "bedrock" | "ollama" | "ollama-cloud";
+
 const BEDROCK_MODELS = ["eu.anthropic.claude-sonnet-4-6", "eu.anthropic.claude-haiku-4-5"];
 const OLLAMA_LOCAL_MODELS = ["qwen3.5:9b"];
 const OLLAMA_CLOUD_MODELS = ["gpt-oss:120b", "gemma4:31b"];
@@ -187,8 +189,9 @@ export default function Simulation() {
       : DEFAULT_PORTFOLIO
   );
   const [agentParseWarnings, setAgentParseWarnings] = useState<string[]>(routerState?.parseWarnings ?? []);
-  const [provider, setProvider] = useState<"bedrock" | "ollama" | "ollama-cloud">("bedrock");
-  const [model, setModel] = useState<string>(BEDROCK_MODELS[0]);
+  const [provider, setProvider] = useState<Provider>("router");
+  const [model, setModel] = useState<string>("");
+  const [routerModels, setRouterModels] = useState<string[]>([]);
   const [ollamaAvailable, setOllamaAvailable] = useState(false);
   const [result, setResult] = useState<SimResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -206,17 +209,27 @@ export default function Simulation() {
         setOllamaAvailable(d.available);
       })
       .catch(() => {});
+
+    listRouterModels()
+      .then((d: { models: string[] }) => {
+        setRouterModels(d.models);
+        setModel((prev) => prev || d.models[0] || "");
+      })
+      .catch(() => {});
+
     if (searchParams.toString()) setSearchParams({}, { replace: true });
   }, []);
 
-  const handleProviderChange = (p: "bedrock" | "ollama" | "ollama-cloud") => {
+  const handleProviderChange = (p: Provider) => {
     setProvider(p);
-    if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
+    if (p === "router") setModel(routerModels[0] ?? "");
+    else if (p === "bedrock") setModel(BEDROCK_MODELS[0]);
     else if (p === "ollama-cloud") setModel(OLLAMA_CLOUD_MODELS[0]);
     else setModel(OLLAMA_LOCAL_MODELS[0]);
   };
 
   const modelOptions =
+    provider === "router" ? routerModels :
     provider === "bedrock" ? BEDROCK_MODELS :
     provider === "ollama-cloud" ? OLLAMA_CLOUD_MODELS :
     OLLAMA_LOCAL_MODELS;
@@ -303,7 +316,12 @@ export default function Simulation() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Strategy Simulation</h1>
+      <h1 className="text-2xl font-bold mb-6">
+        Strategy Simulation{" "}
+        <span className="ml-1 rounded-full bg-gray-200 px-2 py-0.5 align-middle text-xs font-medium text-gray-600">
+          Legacy
+        </span>
+      </h1>
 
       {/* ── Form ── */}
       <form onSubmit={handleRun} className="bg-white rounded-xl shadow p-5 mb-6 space-y-4">
@@ -524,14 +542,15 @@ export default function Simulation() {
 
           <span className="text-xs text-gray-500">LLM:</span>
           <div className="flex rounded border overflow-hidden">
-            {(["bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
+            {(["router", "bedrock", "ollama", "ollama-cloud"] as const).map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => handleProviderChange(p)}
                 className={`px-3 py-1 text-xs font-medium ${provider === p ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}
               >
-                {p === "bedrock" ? "Bedrock" :
+                {p === "router" ? "AI Router" :
+                 p === "bedrock" ? "Bedrock (legacy)" :
                  p === "ollama-cloud" ? "Ollama Cloud" :
                  `Ollama${!ollamaAvailable ? " (offline)" : ""}`}
               </button>

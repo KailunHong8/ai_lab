@@ -180,12 +180,11 @@ async def _llm_extract(description: str, system_prompt: str, provider: str, mode
             return result
         raise ValueError("Ollama returned no parseable JSON")
     else:
-        import boto3
-        region = os.getenv("BEDROCK_REGION", "eu-west-1")
-        model_id = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
-        client = boto3.client("bedrock-runtime", region_name=region)
-        resp = client.converse(
-            modelId=model_id,
+        from backend.services.llm_client import complete_sync
+
+        resp = complete_sync(
+            provider,
+            model,
             system=[{"text": system_prompt}],
             messages=[{"role": "user", "content": [{"text": description}]}],
         )
@@ -708,7 +707,7 @@ class SimulationRequest(BaseModel):
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
-    provider: str = "bedrock"          # "bedrock", "ollama", or "ollama-cloud"
+    provider: str = "router"           # "router", "bedrock", "ollama", or "ollama-cloud"
     model: Optional[str] = None
     run_monte_carlo: bool = True
     monte_carlo_sims: int = 300
@@ -726,7 +725,7 @@ class PortfolioHolding(BaseModel):
 
 class ParseStrategyRequest(BaseModel):
     strategy_description: str
-    provider: str = "bedrock"
+    provider: str = "router"
     model: Optional[str] = None
 
 
@@ -736,7 +735,7 @@ class PortfolioSimulationRequest(BaseModel):
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
-    provider: str = "bedrock"
+    provider: str = "router"
     model: Optional[str] = None
     run_monte_carlo: bool = True
     monte_carlo_sims: int = 300

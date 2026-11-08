@@ -1,5 +1,13 @@
 """
-AWS Bedrock Converse API wrapper with tool-use support.
+Hosted LLM client — AI Model Router (primary) with AWS Bedrock as fallback.
+
+Both backends expose the Bedrock Converse API shape (``client.converse(...)``), so
+callers stay provider-agnostic. The router is Anthropic-Messages compatible and is
+preferred whenever ``AI_MODEL_ROUTER_API_KEY`` is configured; otherwise calls go to
+Bedrock. Pass provider="bedrock" to force Bedrock.
+
+Providers handled here: "router" (default) and "bedrock" (legacy fallback).
+Ollama lives in ``ollama_client``.
 
 Tools available to the agent:
   - get_quote(symbol)               → FMP/Yahoo real-time quote
@@ -16,7 +24,9 @@ import asyncio
 import functools
 import json
 import os
+
 import boto3
+import httpx
 from botocore.config import Config
 from dotenv import load_dotenv
 
@@ -25,14 +35,167 @@ from backend.services import market_data as market_data_service
 load_dotenv()
 
 BEDROCK_REGION = os.getenv("BEDROCK_REGION", "eu-west-1")
-BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
+BEDROCK_DEFAULT_MODEL = os.getenv("BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-6")
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 
+ROUTER_BASE_URL = os.getenv(
+    "AI_MODEL_ROUTER_BASE_URL",
+    "https://ai-model-router-api.eu.foundations.prod.int.hellofresh.io",
+).rstrip("/")
+ROUTER_API_KEY = os.getenv("AI_MODEL_ROUTER_API_KEY", "")
+ROUTER_DEFAULT_MODEL = os.getenv("AI_MODEL_ROUTER_MODEL", "Fast")
+ROUTER_MAX_TOKENS = int(os.getenv("AI_MODEL_ROUTER_MAX_TOKENS", "8192"))
+
+# Bedrock-style model ids. Anything else is a router model id.
+_BEDROCK_ID_PREFIXES = ("eu.anthropic.", "global.anthropic.", "anthropic.", "us.anthropic.")
+
+_router = None
 _bedrock = None
 
 
-def _client():
-    global _bedrock
+def router_available() -> bool:
+    return bool(ROUTER_API_KEY)
+
+
+def resolve(provider: str, model: str | None) -> tuple[str, str]:
+    """
+    Map a requested provider + model onto the backend actually used.
+
+    Returns (backend, model_id) where backend is "router" or "bedrock".
+    "router" falls back to Bedrock when no router key is configured; either way a
+    model id belonging to the other backend is replaced by that backend's default.
+    """
+    backend = "bedrock" if provider == "bedrock" or not ROUTER_API_KEY else "router"
+    model_id = model or (BEDROCK_DEFAULT_MODEL if backend == "bedrock" else ROUTER_DEFAULT_MODEL)
+    if backend == "router" and model_id.startswith(_BEDROCK_ID_PREFIXES):
+        model_id = ROUTER_DEFAULT_MODEL
+    elif backend == "bedrock" and not model_id.startswith(_BEDROCK_ID_PREFIXES):
+        model_id = BEDROCK_DEFAULT_MODEL
+    return backend, model_id
+
+
+def router_models() -> list[str]:
+    """Model ids served by the router catalog; [] when the router is not configured."""
+    if not ROUTER_API_KEY:
+        return []
+    try:
+        response = httpx.get(
+            f"{ROUTER_BASE_URL}/v1/models",
+            headers={
+                "Authorization": f"Bearer {ROUTER_API_KEY}",
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        ids = [m["id"] for m in response.json().get("data", []) if isinstance(m.get("id"), str)]
+        return ids or [ROUTER_DEFAULT_MODEL]
+    except Exception:
+        return [ROUTER_DEFAULT_MODEL]
+
+
+class RouterClient:
+    """Anthropic-Messages client that mimics the Bedrock Converse API."""
+
+    def converse(self, **kwargs):
+        model_id = kwargs.get("modelId") or ROUTER_DEFAULT_MODEL
+
+        body = {
+            "model": model_id,
+            "max_tokens": ROUTER_MAX_TOKENS,
+            "messages": [self._message(message) for message in kwargs.get("messages", [])],
+        }
+        system = kwargs.get("system", [])
+        if system:
+            body["system"] = "\n".join(block["text"] for block in system if "text" in block)
+
+        inference = kwargs.get("inferenceConfig", {})
+        if "maxTokens" in inference:
+            body["max_tokens"] = inference["maxTokens"]
+        for source, target in (("temperature", "temperature"), ("topP", "top_p")):
+            if source in inference:
+                body[target] = inference[source]
+
+        tools = kwargs.get("toolConfig", {}).get("tools", [])
+        if tools:
+            body["tools"] = [
+                {
+                    "name": tool["toolSpec"]["name"],
+                    "description": tool["toolSpec"].get("description", ""),
+                    "input_schema": tool["toolSpec"]["inputSchema"]["json"],
+                }
+                for tool in tools
+            ]
+
+        response = httpx.post(
+            f"{ROUTER_BASE_URL}/v1/messages",
+            headers={
+                "Authorization": f"Bearer {ROUTER_API_KEY}",
+                "anthropic-version": "2023-06-01",
+            },
+            json=body,
+            timeout=300,
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = []
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                content.append({"text": block["text"]})
+            elif block.get("type") == "tool_use":
+                content.append({
+                    "toolUse": {
+                        "toolUseId": block["id"],
+                        "name": block["name"],
+                        "input": block.get("input", {}),
+                    }
+                })
+
+        stop_reason = data.get("stop_reason")
+        return {
+            "output": {"message": {"role": "assistant", "content": content}},
+            "stopReason": "tool_use" if stop_reason == "tool_use" else (
+                "max_tokens" if stop_reason == "max_tokens" else "end_turn"
+            ),
+            "usage": {
+                "inputTokens": data.get("usage", {}).get("input_tokens", 0),
+                "outputTokens": data.get("usage", {}).get("output_tokens", 0),
+            },
+        }
+
+    @staticmethod
+    def _message(message: dict) -> dict:
+        content = []
+        for block in message.get("content", []):
+            if "text" in block:
+                content.append({"type": "text", "text": block["text"]})
+            elif "toolUse" in block:
+                tool_use = block["toolUse"]
+                content.append({
+                    "type": "tool_use",
+                    "id": tool_use["toolUseId"],
+                    "name": tool_use["name"],
+                    "input": tool_use.get("input", {}),
+                })
+            elif "toolResult" in block:
+                tool_result = block["toolResult"]
+                result_content = tool_result.get("content", [])
+                content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_result["toolUseId"],
+                    "content": "\n".join(
+                        item["text"] for item in result_content if "text" in item
+                    ),
+                })
+        return {"role": message["role"], "content": content}
+
+
+def _client(backend: str):
+    global _router, _bedrock
+    if backend == "router":
+        if _router is None:
+            _router = RouterClient()
+        return _router
     if _bedrock is None:
         session = boto3.Session(profile_name=AWS_PROFILE)
         _bedrock = session.client(
@@ -41,6 +204,12 @@ def _client():
             config=Config(read_timeout=300),
         )
     return _bedrock
+
+
+def complete_sync(provider: str, model: str | None, **kwargs) -> dict:
+    """Blocking single-shot converse. Wrap in asyncio.to_thread from async code."""
+    backend, model_id = resolve(provider, model)
+    return _client(backend).converse(modelId=model_id, **kwargs)
 
 
 TOOLS = [
@@ -237,10 +406,26 @@ SYSTEM_PROMPT = (
 
 async def _dispatch_tool(name: str, tool_input: dict, portfolio_snapshot: dict | None) -> str:
     if name == "get_quote":
-        symbol = tool_input.get("symbol", "")
+        symbol = tool_input.get("symbol", "").strip().upper()
         try:
-            quote = await market_data_service.get_quote(symbol)
-            return json.dumps(quote.model_dump())
+            from backend.services import fmp as fmp_service
+
+            quote = await fmp_service.get_quote(symbol)
+            if not quote or quote.get("price") is None:
+                return json.dumps({
+                    "error": f"No quote data available for {symbol} from FMP or Yahoo Finance."
+                })
+            return json.dumps({
+                "symbol": quote.get("symbol", symbol),
+                "name": quote.get("name", ""),
+                "price": quote["price"],
+                "change_pct": quote.get("changesPercentage", 0),
+                "volume": quote.get("volume"),
+                "market_cap": quote.get("marketCap"),
+                "open": quote.get("open"),
+                "day_high": quote.get("dayHigh"),
+                "day_low": quote.get("dayLow"),
+            })
         except Exception as exc:
             return json.dumps({"error": str(exc)})
 
@@ -312,6 +497,7 @@ async def chat(
     portfolio_snapshot: dict | None = None,
     session_id: str = "",
     model_id: str | None = None,
+    provider: str = "router",
 ) -> str:
     """
     Run one agentic turn. Emits structured logs via LLMLogger (structlog + optional Langfuse).
@@ -319,12 +505,12 @@ async def chat(
     from backend.services.llm_logger import LLMLogger
 
     messages = list(history) + [{"role": "user", "content": [{"text": message}]}]
-    client = _client()
-    selected_model_id = model_id or BEDROCK_MODEL_ID
+    backend, selected_model_id = resolve(provider, model_id)
+    client = _client(backend)
     total_input_tokens = 0
     total_output_tokens = 0
 
-    async with LLMLogger("bedrock", selected_model_id, session_id, message) as trace:
+    async with LLMLogger(backend, selected_model_id, session_id, message) as trace:
         while True:
             response = await asyncio.to_thread(
                 functools.partial(

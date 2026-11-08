@@ -2,7 +2,7 @@
 
 # Project Overview
 
-AI-powered paper-trading and strategy research platform. Users interact via a React UI backed by a FastAPI service. An AWS Bedrock agent (Claude Sonnet 4.6) acts as the trading copilot, grounding its reasoning in research documents stored in `investing_research/` and live market data from the FMP free-tier API.
+AI-powered paper-trading and strategy research platform. Users interact via a React UI backed by a FastAPI service. An agent on the AI Model Router (AWS Bedrock as fallback) acts as the trading copilot, grounding its reasoning in research documents stored in `investing_research/` and live market data from the FMP free-tier API.
 
 GitHub repo: https://github.com/KailunHong8/quant
 
@@ -35,7 +35,8 @@ Copy `.env.example` to `.env` and fill in values. The backend loads `.env` via `
 
 Required variables:
 - `FMP_API_KEY` — Financial Modeling Prep API key
-- `BEDROCK_REGION` / `BEDROCK_MODEL_ID` — AWS Bedrock (defaults: `eu-west-1` / `anthropic.claude-sonnet-4-20250514-v1:0`)
+- `AI_MODEL_ROUTER_BASE_URL` / `AI_MODEL_ROUTER_API_KEY` / `AI_MODEL_ROUTER_MODEL` — hosted LLM (primary)
+- `BEDROCK_REGION` / `BEDROCK_MODEL_ID` — AWS Bedrock (fallback; defaults: `eu-west-1` / `anthropic.claude-sonnet-4-20250514-v1:0`)
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — AWS credentials for Bedrock (Account ID: 100927400432)
 - `DATABASE_URL` — SQLite default: `sqlite+aiosqlite:///./quant.db`
 
@@ -49,12 +50,12 @@ FastAPI app with four routers, all under `/api/`:
 |---|---|---|
 | `routers/market.py` | `/api/market` | FMP proxy — quotes, profiles, history, search |
 | `routers/portfolio.py` | `/api/portfolio` | Paper-trading CRUD — deposit/withdraw/buy/sell, holdings, summary, transactions |
-| `routers/agent.py` | `/api/agent` | Bedrock agentic chat, session management |
+| `routers/agent.py` | `/api/agent` | Agentic chat (router/Bedrock), session management |
 | `routers/simulation.py` | `/api/simulation` | Backtesting — NL strategy → rule set → replay on OHLCV |
 
 **Services:**
 - `services/fmp.py` — `httpx` async client against `https://financialmodelingprep.com/stable`
-- `services/bedrock.py` — Bedrock Converse API wrapper with tool-use loop (`get_quote`, `get_portfolio`, `search_research`)
+- `services/llm_client.py` — hosted LLM client (AI Model Router, Bedrock fallback) with tool-use loop (`get_quote`, `get_portfolio`, `search_research`)
 - `services/research.py` — Lazy-loads and chunks PDFs + markdown from `investing_research/` (500-word windows, keyword-overlap retrieval)
 
 **Database:** SQLAlchemy async (aiosqlite for SQLite). Schema: `User`, `Position`, `Transaction`. `init_db()` is called on startup via FastAPI `lifespan`. Single-user; the default user is auto-created.
@@ -70,13 +71,12 @@ React 19 + TypeScript, Vite, Tailwind CSS, React Router v7, Recharts.
 
 All API calls go through `src/api/client.ts` — a single Axios instance pointing at `http://localhost:8000`.
 
-Pages map 1-to-1 to backend feature areas:
-- `/` → Dashboard (portfolio summary, P&L)
-- `/holdings` → open positions with live prices
-- `/transactions` → filterable log
-- `/market` → symbol search + quote + price chart
-- `/agent` → chat with Bedrock agent
-- `/simulation` → backtest form + equity curve
+Pages map to three workspaces, each with local views:
+- `/portfolio` → Portfolio (overview, positions, activity)
+- `/research/library` → Research (library, company, discover)
+- `/strategies` → Strategies
+- `/agent` → AI Copilot (reached from the "Ask AI" header action)
+- `/simulation` → legacy backtest view, kept for compatibility
 
 ### Research Corpus
 
@@ -92,7 +92,7 @@ Free tier has ~250 req/day and may return 402/403 on some endpoints. Yahoo Finan
 - `GET /stable/historical-price-eod/full?symbol=AAPL&from=...&to=...` — OHLCV for backtesting
 - `GET /stable/search-name?query=apple` — symbol search
 
-## AWS Bedrock Configuration
+## AWS Bedrock Configuration (legacy fallback)
 
 - **Account ID:** 100927400432
 - **IAM User:** BedrockUser

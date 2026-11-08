@@ -212,7 +212,7 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # UUID
     name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    provider: Mapped[str] = mapped_column(String(16), default="bedrock")
+    provider: Mapped[str] = mapped_column(String(16), default="router")
     model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # compressed older history
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

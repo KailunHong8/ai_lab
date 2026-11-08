@@ -20,6 +20,7 @@ and their historical archive.
 6. [`simulation_strategy_parser_change_spec.md`](simulation_strategy_parser_change_spec.md) — strategy parsing design and acceptance criteria.
 7. [`backtest_strategy_improvement_change_spec.md`](backtest_strategy_improvement_change_spec.md) — standalone backtest improvement and legacy simulation deprecation track (outside Phase 2).
 8. [`../code_context.md`](../code_context.md) — canonical as-built engineering reference.
+9. [`app_simplification_change_spec.md`](app_simplification_change_spec.md) — proposed three-workspace simplification, contextual AI, and gated workflow consolidation.
 
 ## Archive
 

@@ -6,9 +6,9 @@ Optional:       Langfuse v4 trace (set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY
 
 Usage:
     from backend.services.llm_logger import LLMLogger
-    async with LLMLogger("bedrock", model_id, session_id, user_message) as trace:
+    async with LLMLogger("router", model_id, session_id, user_message) as trace:
         trace.add_tool_use("get_quote", {"symbol": "NVDA"}, '{"price": 135}')
-        reply = await bedrock.chat(...)
+        reply = await llm_client.chat(...)
         trace.finish(reply, input_tokens=..., output_tokens=...)
 """
 from __future__ import annotations

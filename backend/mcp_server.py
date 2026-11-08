@@ -18,7 +18,7 @@ async def analyze_ticker(symbol: str, analysis_date: str | None = None) -> dict:
     from backend.services.multi_agent import run
 
     _date = date.fromisoformat(analysis_date) if analysis_date else date.today()
-    provider = os.getenv("MCP_PROVIDER", "bedrock")
+    provider = os.getenv("MCP_PROVIDER", "router")
     model = os.getenv("MCP_MODEL") or None
 
     async with SessionLocal() as db:

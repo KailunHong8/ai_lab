@@ -17,6 +17,7 @@ FMP_BASE = "https://financialmodelingprep.com/stable"
 # TTL caches — shared across all requests
 _quote_cache:   TTLCache = TTLCache(maxsize=200, ttl=30)    # 30s — prices change frequently
 _profile_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)  # 1hr — company info is stable
+_ratios_cache:  TTLCache = TTLCache(maxsize=200, ttl=3600)  # 1hr — fundamentals are stable
 _search_cache:  TTLCache = TTLCache(maxsize=500, ttl=300)   # 5min — search results
 _history_cache: TTLCache = TTLCache(maxsize=100, ttl=3600)  # 1hr — EOD data is stable
 _cache_lock = threading.Lock()
@@ -124,6 +125,32 @@ async def get_profile(symbol: str) -> dict:
     if result:
         with _cache_lock:
             _profile_cache[key] = result
+    return result
+
+
+async def get_ratios(symbol: str) -> dict:
+    """Fetch the latest annual financial ratios; return {} when unavailable."""
+    key = symbol.upper()
+    with _cache_lock:
+        if key in _ratios_cache:
+            return _ratios_cache[key]
+
+    result: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{FMP_BASE}/ratios",
+                params=_params(symbol=key, limit=1),
+            )
+            _handle_fmp_error(resp, "ratios")
+            data = resp.json()
+            result = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    except (PermissionError, LookupError, RuntimeError, httpx.HTTPError):
+        pass
+
+    if result:
+        with _cache_lock:
+            _ratios_cache[key] = result
     return result
 
 

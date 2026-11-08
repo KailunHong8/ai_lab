@@ -2,15 +2,15 @@
 Copilot orchestrator — routes a user message to the right specialist agent.
 
 Specialists:
-  - "advice"   → backend.services.bedrock / ollama_client (tool-equipped: quotes,
+  - "advice"   → backend.services.llm_client / ollama_client (tool-equipped: quotes,
                  portfolio, theses, principles, screener history). The user's
                  configured provider/model.
   - "research" → backend.services.perplexity_client (current web info, no local tools).
   - "both"     → research first, then feed findings into the advice agent for synthesis.
 
-Routing is one cheap Bedrock-Haiku classification call. When Bedrock is unavailable
-it falls back to Ollama Cloud, then local Ollama, and finally a keyword heuristic so
-Ollama-only / Bedrock-less setups still route deterministically.
+Routing is one cheap hosted-LLM classification call (AI Model Router, Bedrock fallback).
+When that is unavailable it falls back to Ollama Cloud, then local Ollama, and finally a
+keyword heuristic so Ollama-only / router-less setups still route deterministically.
 """
 from __future__ import annotations
 
@@ -51,23 +51,23 @@ def _match_intent(text: str) -> Optional[str]:
     return None
 
 
-def _classify_bedrock(message: str) -> Optional[str]:
-    """Cheap Bedrock-Haiku classification. Returns None if Bedrock is unavailable."""
-    import boto3
+def _classify_llm(message: str) -> Optional[str]:
+    """Cheap hosted-LLM classification (router, Bedrock fallback). Returns None if unavailable."""
+    from backend.services.llm_client import complete_sync
 
-    region = os.getenv("BEDROCK_REGION", "eu-west-1")
-    # Prefer a fast/cheap model for routing; fall back to the main one.
-    model_id = os.getenv("BEDROCK_ROUTER_MODEL_ID") or os.getenv(
-        "BEDROCK_MODEL_ID", "eu.anthropic.claude-haiku-4-5"
-    )
-    client = boto3.client("bedrock-runtime", region_name=region)
-    resp = client.converse(
-        modelId=model_id,
+    # Prefer a fast/cheap model for routing; fall back to the provider default.
+    model_id = os.getenv("BEDROCK_ROUTER_MODEL_ID") or None
+    resp = complete_sync(
+        "router",
+        model_id,
         system=[{"text": _ROUTER_SYSTEM}],
         messages=[{"role": "user", "content": [{"text": message}]}],
-        inferenceConfig={"maxTokens": 4, "temperature": 0.0},
+        inferenceConfig={"maxTokens": 16, "temperature": 0.0},
     )
-    return _match_intent(resp["output"]["message"]["content"][0]["text"])
+    for block in resp["output"]["message"]["content"]:
+        if "text" in block:
+            return _match_intent(block["text"])
+    return None
 
 
 async def _classify_ollama(message: str, *, cloud: bool) -> Optional[str]:
@@ -95,10 +95,10 @@ async def classify_intent(message: str) -> str:
     """
     Return 'advice' | 'research' | 'both'.
 
-    Fallback chain: Bedrock → Ollama Cloud → local Ollama → keyword heuristic.
+    Fallback chain: AI Model Router / Bedrock → Ollama Cloud → local Ollama → keyword heuristic.
     """
     try:
-        intent = await asyncio.to_thread(_classify_bedrock, message)
+        intent = await asyncio.to_thread(_classify_llm, message)
         if intent:
             return intent
     except Exception:
